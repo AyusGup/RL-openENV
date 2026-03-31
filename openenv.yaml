@@ -1,0 +1,45 @@
+name: "SRE-Incident-Response"
+description: "AI agent diagnoses and fixes production incidents (FastAPI status code mismatch, retry-logic off-by-one, cascading failures)."
+provider: "Hugging Face Spaces"
+repository_url: "https://huggingface.co/spaces/AyusGup/rl-openenv"
+interface: "HTTP"
+port: 7860
+
+action_space:
+  type: "dict"
+  description: "A dictionary with tool, command, file_path, and file_content"
+  fields:
+    tool:
+      type: "string"
+      enum: ["terminal", "editor", "submit"]
+      description: "The tool to use."
+    command:
+      type: "string"
+      description: "Shell command to run in terminal tool mode."
+    file_path:
+      type: "string"
+      description: "Path of the file to edit (relative to workspace root)."
+    file_content:
+      type: "string"
+      description: "New content of the file."
+
+observation_space:
+  stdout: "string"
+  stderr: "string"
+  exit_code: "int"
+  file_tree: "list"
+  reward: "float"
+  done: "bool"
+  alert_message: "string"
+  score: "float"
+
+tasks:
+  - id: "task1_wrong_status"
+    name: "Task 1: FastAPI Status Code Mismatch"
+    difficulty: "easy"
+  - id: "task2_retry_logic"
+    name: "Task 2: Retry Logic Off-by-One"
+    difficulty: "medium"
+  - id: "task3_cascading_failure"
+    name: "Task 3: Cascading Timeout Failure"
+    difficulty: "hard"
