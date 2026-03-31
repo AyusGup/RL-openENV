@@ -10,6 +10,7 @@ from ..providers.static_alert import StaticAlertProvider
 from ..tasks.registry import TaskRegistry
 from ..utils.file_ops import get_file_tree, setup_workspace
 from .grader import SREGrader
+from .reward import SREStepRewarder
 
 
 class SREEnvironment:
@@ -32,6 +33,7 @@ class SREEnvironment:
         self.executor = SandboxExecutor()
         self.alert_provider = StaticAlertProvider(fixtures_dir)
         self.grader = SREGrader(self.executor)
+        self.rewarder = SREStepRewarder()
         
         # Track active state
         self.state: Optional[SREState] = None
@@ -61,6 +63,9 @@ class SREEnvironment:
             task_name=task_config.name,
             workspace_root=str(self.workspace_root)
         )
+        
+        # Reset rewarder for new episode
+        self.rewarder = SREStepRewarder()
 
         # Get initial alert information
         alert_data = await self.alert_provider.get_alert(task_id)
@@ -128,8 +133,8 @@ class SREEnvironment:
         # 3. Always refresh file tree
         observation.file_tree = get_file_tree(self.workspace_root)
         
-        # Post-step cost
-        observation.reward = -0.01 
+        # 4. Calculate Step Reward
+        observation.reward = self.rewarder.calculate_reward(action)
         self.state.cumulative_reward += observation.reward
 
         return observation
