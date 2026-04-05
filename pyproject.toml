@@ -12,6 +12,8 @@ dependencies = [
     "uvicorn>=0.22.0",
     "pydantic>=2.0.0",
     "httpx>=0.24.0",
+    "openai>=1.30.0",
+    "openenv-core>=0.1.1",
     "pytest>=7.3.0",
     "docker>=6.1.0",
     "ruff>=0.1.0",
@@ -25,6 +27,9 @@ dev = [
     "isort>=5.12.0"
 ]
 
+[project.scripts]
+server = "server.app:main"
+
 [tool.ruff]
 line-length = 88
 target-version = "py311"
@@ -37,3 +42,6 @@ convention = "google"
 [build-system]
 build-backend = "setuptools.build_meta"
 requires = ["setuptools>=61.0"]
+
+[tool.setuptools.packages.find]
+include = ["sre_env*", "server*"]

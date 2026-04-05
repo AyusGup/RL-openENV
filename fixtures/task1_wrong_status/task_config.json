@@ -2,7 +2,7 @@
   "id": "task1_wrong_status",
   "name": "Task 1: FastAPI Status Code Mismatch",
   "difficulty": "easy",
-  "alert_message": "CRITICAL: Monitoring alert triggered! Endpoint /api/items is returning 200 OK after creation, but our contract (RFC 7231) requires 201 Created.",
+  "alert_message": "CRITICAL: Monitoring alert triggered! The item creation API is violating its response contract after successful writes. Investigate the create flow and restore the expected behavior.",
   "alert_source": "prometheus-alertmanager",
   "severity": "HIGH",
   "expected_fix_files": [

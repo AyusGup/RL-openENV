@@ -2,9 +2,10 @@
 
 import logging
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
+from uuid import uuid4
 
-from ..models import SREAction, SREObservation, SREState
+from ..models import SREAction, SREObservation, SREReward, SREState, SREStepInfo, SREStepResult
 from ..providers.sandbox_executor import SandboxExecutor
 from ..providers.static_alert import StaticAlertProvider
 from ..tasks.registry import TaskRegistry
@@ -41,54 +42,67 @@ class SREEnvironment:
         # Simple logging
         self.logger = logging.getLogger("sre_env")
 
-    async def reset(self, task_id: str) -> SREObservation:
+    async def reset(self, task_id: str | None = None) -> SREObservation:
         """Initialize a new incident episode.
 
         1. Setup a fresh workspace from the task fixture.
         2. Create the initial SREState.
         3. Fetch the first observation (alert + file tree).
         """
-        task_config = self.registry.get_task(task_id)
+        resolved_task_id = task_id or self.registry.default_task_id()
+        if not resolved_task_id:
+            return SREObservation(stderr="Error: No tasks are configured.")
+
+        task_config = self.registry.get_task(resolved_task_id)
         if not task_config:
-            return SREObservation(stderr=f"Error: Task {task_id} not found.")
+            return SREObservation(stderr=f"Error: Task {resolved_task_id} not found.")
 
         # Prepare clear workspace
-        fixture_path = self.fixtures_dir / task_id
+        fixture_path = self.fixtures_dir / resolved_task_id
         if not setup_workspace(fixture_path, self.workspace_root):
             return SREObservation(stderr="Error: Could not setup workspace.")
 
         # Start fresh state
         self.state = SREState(
-            task_id=task_id,
+            episode_id=str(uuid4()),
+            task_id=resolved_task_id,
             task_name=task_config.name,
-            workspace_root=str(self.workspace_root)
+            workspace_root=str(self.workspace_root),
         )
         
         # Reset rewarder for new episode
         self.rewarder = SREStepRewarder()
 
         # Get initial alert information
-        alert_data = await self.alert_provider.get_alert(task_id)
+        alert_data = await self.alert_provider.get_alert(resolved_task_id)
 
         return SREObservation(
             alert_message=alert_data.get("message", ""),
             file_tree=get_file_tree(self.workspace_root),
-            reward=0.0,
-            done=False
         )
 
-    async def step(self, action: SREAction) -> SREObservation:
+    async def step(self, action: SREAction) -> SREStepResult:
         """Handle one agent action.
 
         Returns:
-            Observation: result of the agent's command.
+            SREStepResult: typed result of the agent's command.
         """
         if not self.state or self.state.done:
-            return SREObservation(stderr="Error: No active episode. Call reset() first.", done=True)
+            return SREStepResult(
+                observation=SREObservation(stderr="Error: No active episode. Call reset() first."),
+                reward=SREReward(value=0.0),
+                done=True,
+                info=SREStepInfo(last_action_error="Error: No active episode. Call reset() first."),
+            )
 
         task_config = self.registry.get_task(self.state.task_id)
         if not task_config:
-            return SREObservation(stderr="Error: Active task configuration lost.")
+            return SREStepResult(
+                observation=SREObservation(stderr="Error: Active task configuration lost."),
+                reward=SREReward(value=0.0),
+                done=True,
+                info=SREStepInfo(last_action_error="Error: Active task configuration lost."),
+            )
 
         # 1. Update step count
         self.state.step_count += 1
@@ -96,45 +110,72 @@ class SREEnvironment:
              self.state.done = True
 
         # 2. Execute tool
-        observation = SREObservation(done=self.state.done)
-        
+        observation = SREObservation()
+        last_action_error: Optional[str] = None
+        info_message = ""
+
+        final_score: Optional[float] = None
+
         if action.tool == "terminal":
+            timeout = 30 if "pytest" in action.command.lower() else 10
             stdout, stderr, exit_code = await self.executor.execute(
-                action.command, self.workspace_root
+                action.command, self.workspace_root, timeout=timeout
             )
             observation.stdout = stdout
             observation.stderr = stderr
             observation.exit_code = exit_code
+            last_action_error = stderr or None
 
         elif action.tool == "editor":
             # Write to file
             try:
-                target_path = self.workspace_root / action.file_path
+                target_path = (self.workspace_root / action.file_path).resolve()
+                workspace_root = self.workspace_root.resolve()
+                if workspace_root not in target_path.parents and target_path != workspace_root:
+                    raise ValueError("Editor target must stay inside workspace root.")
                 target_path.parent.mkdir(parents=True, exist_ok=True)
-                with open(target_path, "w", encoding="utf-8") as f:
-                    f.write(action.file_content)
+                with open(target_path, "w", encoding="utf-8") as file_handle:
+                    file_handle.write(action.file_content)
                 observation.stdout = f"SUCCESS: Wrote content to {action.file_path}"
+                info_message = observation.stdout
             except Exception as e:
                 observation.stderr = f"FAIL: Error writing file: {str(e)}"
+                last_action_error = observation.stderr
 
         elif action.tool == "submit":
             # Signalling end of episode
             self.state.done = True
-            observation.done = True
             
             # RUN GRADING!
             fixture_path = self.fixtures_dir / self.state.task_id
-            score = await self.grader.grade_episode(
+            final_score = await self.grader.grade_episode(
                 task_config, fixture_path, self.workspace_root
             )
-            observation.score = score
-            observation.stdout = f"Episode submitted for grading. FINAL SCORE: {score:.2f}"
+            observation.stdout = f"Episode submitted for grading. FINAL SCORE: {final_score:.2f}"
+            info_message = observation.stdout
+        else:
+            observation.stderr = f"Error: Unsupported tool {action.tool}"
+            last_action_error = observation.stderr
 
         # 3. Always refresh file tree
         observation.file_tree = get_file_tree(self.workspace_root)
-        
-        # 4. Calculate Step Reward
-        observation.reward = self.rewarder.calculate_reward(action)
-        self.state.cumulative_reward += observation.reward
 
-        return observation
+        # 4. Calculate Step Reward
+        reward_value = 0.0
+        if action.tool != "submit":
+            reward_value = self.rewarder.calculate_reward(action)
+        else:
+            reward_value = final_score or 0.0
+        self.state.cumulative_reward += reward_value
+
+        info = SREStepInfo(
+            score=final_score if action.tool == "submit" else None,
+            message=info_message,
+            last_action_error=last_action_error,
+        )
+        return SREStepResult(
+            observation=observation,
+            reward=SREReward(value=reward_value),
+            done=self.state.done,
+            info=info,
+        )

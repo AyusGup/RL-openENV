@@ -1,12 +1,12 @@
 """Deterministic grading for SRE incident response tasks."""
 
-import difflib
+import os
 import re
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import List
 
-import asyncio
 from ..providers.sandbox_executor import SandboxExecutor
+from ..tasks import RegexCheck
 from ..tasks.config import TaskConfig
 
 
@@ -63,23 +63,25 @@ class SREGrader:
                 continue
                 
             # If the files are different, the agent modified it
-            with open(orig, "r") as f_orig, open(new, "r") as f_new:
+            with open(orig, "r", encoding="utf-8") as f_orig, open(
+                new, "r", encoding="utf-8"
+            ) as f_new:
                 if f_orig.read() != f_new.read():
                     modified_count += 1
-                    
+
         return modified_count / len(expected_files)
 
     async def _check_tests(self, workspace_path: Path) -> float:
         """Run pytest in the workspace."""
-        # Use our executor with a 30s timeout for tests
+        test_command = "py -3 -m pytest -q" if os.name == "nt" else "python -m pytest -q"
         stdout, stderr, exit_code = await self.executor.execute(
-            "pytest -v", workspace_path, timeout=30
+            test_command, workspace_path, timeout=30
         )
-        
+
         # 1.0 if exit code 0 (all pass), 0.0 otherwise
         return 1.0 if exit_code == 0 else 0.0
 
-    def _check_regex(self, checks: List[any], workspace_path: Path) -> float:
+    def _check_regex(self, checks: List[RegexCheck], workspace_path: Path) -> float:
         """Verify the logic of the fix using regex."""
         if not checks:
             return 1.0
@@ -90,9 +92,18 @@ class SREGrader:
             if not target_file.exists():
                 continue
                 
-            with open(target_file, "r") as f:
-                content = f.read()
+            with open(target_file, "r", encoding="utf-8") as f:
+                content = self._strip_comment_only_lines(f.read())
                 if re.search(check.pattern, content):
                     pass_count += 1
-                    
+
         return pass_count / len(checks)
+
+    def _strip_comment_only_lines(self, content: str) -> str:
+        """Remove full-line comments so regex checks target executable code."""
+        filtered_lines = []
+        for line in content.splitlines():
+            if line.lstrip().startswith("#"):
+                continue
+            filtered_lines.append(line)
+        return "\n".join(filtered_lines)

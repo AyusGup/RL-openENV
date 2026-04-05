@@ -1,12 +1,44 @@
 # SRE Incident Response - OpenEnv
 
-An OpenEnv-compliant environment where an AI agent diagnoses and fixes production incidents.
+An OpenEnv-style environment for evaluating agents on a real SRE incident-response task: investigating an API contract breakage, identifying the buggy source change, validating the fix, and submitting for grading.
 
 ## Features
-- **3 SRE Scenarios**: From simple status code mismatches to complex cascading timeout failures.
+- **Single-task rehearsal**: One runnable task focused on a FastAPI status code mismatch.
 - **Action Space**: Simple `terminal`, `editor`, and `submit` tools.
 - **Provider Pattern**: Swappable data sources for logs, metrics, and execution.
 - **Deterministic Grading**: Using `difflib`, `pytest` exit codes, and regex-based RCA scoring.
+
+## Motivation
+This environment models a real operational workflow humans perform during incident response: inspect alerts, read logs, inspect source, apply a fix, run verification, and submit a resolution. It is designed as a lightweight rehearsal branch for a broader SRE benchmark.
+
+## Interface
+Action space:
+- `terminal`: run one workspace-scoped shell command
+- `editor`: replace one file with full contents
+- `submit`: finish the episode and trigger grading
+
+Observation model:
+- `stdout`
+- `stderr`
+- `exit_code`
+- `file_tree`
+- `alert_message`
+
+Step result model:
+- `observation`
+- `reward`
+- `done`
+- `info`
+
+State model:
+- `episode_id`
+- `task_id`
+- `task_name`
+- `step_count`
+- `max_steps`
+- `cumulative_reward`
+- `done`
+- `workspace_root`
 
 ## Getting Started
 To install dependencies:
@@ -19,14 +51,73 @@ To run the environment server:
 python -m sre_env.server.app
 ```
 
+To run the baseline inference script:
+```bash
+python inference.py
+```
+
+The inference client uses the OpenAI-compatible model endpoint to choose the next environment action step by step and emits the required `[START]`, `[STEP]`, and `[END]` logs.
+
+To validate the OpenEnv manifest locally:
+```bash
+openenv validate
+```
+
+## WSL Setup
+From WSL, create a Linux virtual environment in the repo root:
+```bash
+cd /mnt/c/Users/ag835/My_projects/rl-openenv
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e .
+```
+
+Start the environment server in one terminal:
+```bash
+source .venv/bin/activate
+python -m uvicorn server.app:app --host 127.0.0.1 --port 7860
+```
+
+In a second terminal, set the required inference variables and run:
+```bash
+source .venv/bin/activate
+export API_BASE_URL="https://router.huggingface.co/v1"
+export MODEL_NAME="Qwen/Qwen2.5-72B-Instruct"
+export OPENAI_API_KEY="hf_your_token_here"
+python inference.py
+```
+
+You can copy the template in `.env.example` into your shell manually or load it with your preferred dotenv workflow. Do not commit real secrets.
+
+## Hugging Face Secrets
+For Hugging Face Spaces, add these in your Space settings:
+- `API_BASE_URL`
+- `MODEL_NAME`
+- `OPENAI_API_KEY`
+
+Put `OPENAI_API_KEY` in Space Secrets, not plain Variables.
+
+To create a token:
+1. Sign in to Hugging Face.
+2. Open `https://huggingface.co/settings/tokens`.
+3. Create a fine-grained token.
+4. Grant permission to make Inference Providers calls.
+
+The default OpenAI-compatible endpoint used by this repo is:
+```text
+https://router.huggingface.co/v1
+```
+
 ## Task 1: FastAPI Status Code Mismatch
-A POST endpoint returns 200 instead of 201. The agent must find the bug and fix it.
+Difficulty: easy
 
-## Task 2: Retry Logic Off-by-One
-Transient failures aren't being retried enough due to an off-by-one error in a loop.
+The item-creation flow violates its API contract. The agent must inspect logs and source, identify the bug, fix it, run tests, and submit the workspace for deterministic grading.
 
-## Task 3: Cascading Timeout Failure
-Service B slowed down, and Service A's hardcoded timeout is too low.
+Baseline score:
+- `task1_wrong_status`: `1.00` on a successful local run with model-backed inference
+
+Task 2 and task 3 are still pending on this rehearsal branch.
 
 ## License
 MIT

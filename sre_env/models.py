@@ -1,41 +1,53 @@
 """Typed models for the SRE incident response environment."""
 
-from dataclasses import dataclass, field
-from typing import Literal, Optional, Any
+from typing import Literal, Optional
+
+from pydantic import BaseModel, Field
 
 
-@dataclass
-class SREAction:
-    """An action the agent can take.
-
-    Tools:
-        terminal: Run a shell command (cat, grep, ls, pytest, python, etc.)
-        editor: Write content to a file (create or overwrite)
-        submit: Signal episode complete, trigger grading
-    """
+class SREAction(BaseModel):
+    """An action the agent can take."""
 
     tool: Literal["terminal", "editor", "submit"]
-    command: str = ""              # For terminal: the shell command
-    file_path: str = ""            # For editor: relative path in workspace
-    file_content: str = ""         # For editor: full file content to write
+    command: str = ""
+    file_path: str = ""
+    file_content: str = ""
 
 
-@dataclass
-class SREObservation:
+class SREObservation(BaseModel):
     """What the agent sees after each action."""
 
     stdout: str = ""
     stderr: str = ""
     exit_code: int = 0
-    file_tree: list[str] = field(default_factory=list)
-    reward: float = 0.0
+    file_tree: list[str] = Field(default_factory=list)
+    alert_message: str = ""
+
+
+class SREReward(BaseModel):
+    """Typed reward payload for a single environment step."""
+
+    value: float = 0.0
+
+
+class SREStepInfo(BaseModel):
+    """Extra typed metadata returned from step()."""
+
+    score: Optional[float] = None
+    message: str = ""
+    last_action_error: Optional[str] = None
+
+
+class SREStepResult(BaseModel):
+    """Typed return payload from step(action)."""
+
+    observation: SREObservation
+    reward: SREReward
     done: bool = False
-    alert_message: str = ""        # Populated on reset()
-    score: Optional[float] = None  # Final score on submit
+    info: SREStepInfo = Field(default_factory=SREStepInfo)
 
 
-@dataclass
-class SREState:
+class SREState(BaseModel):
     """Episode state metadata."""
 
     episode_id: str = ""
@@ -45,4 +57,12 @@ class SREState:
     max_steps: int = 50
     cumulative_reward: float = 0.0
     done: bool = False
-    workspace_root: str = "/workspace" # Root of the episode's sandbox
+    workspace_root: str = "/workspace"
+
+
+class TaskSummary(BaseModel):
+    """Public task metadata exposed by the HTTP API."""
+
+    id: str
+    name: str
+    difficulty: str

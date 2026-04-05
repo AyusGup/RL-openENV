@@ -37,9 +37,10 @@ class SandboxExecutor(CommandExecutor):
             return ("", f"Error: Workspace directory {cwd} does not exist.", 1)
 
         try:
+            normalized_command = self._normalize_command(command)
             # We use asyncio to prevent blocking the main FastAPI event loop
             process = await asyncio.create_subprocess_shell(
-                command,
+                normalized_command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(cwd),
@@ -73,3 +74,20 @@ class SandboxExecutor(CommandExecutor):
 
         except Exception as e:
             return ("", f"Execution Error: {str(e)}", 1)
+
+    def _normalize_command(self, command: str) -> str:
+        """Translate a small subset of Unix-style commands for Windows dev shells."""
+        if os.name != "nt":
+            return command
+
+        if command.startswith("cat "):
+            target = command[4:].replace("/", "\\")
+            return f"type {target}"
+
+        if command.startswith("python "):
+            return f"py -3 {command[7:]}"
+
+        if command == "python":
+            return "py -3"
+
+        return command

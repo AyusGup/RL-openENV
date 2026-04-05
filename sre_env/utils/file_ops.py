@@ -46,7 +46,7 @@ def get_file_tree(root: Path) -> list[str]:
         return []
         
     return [
-        str(f.relative_to(root))
+        f.relative_to(root).as_posix()
         for f in root.rglob("*")
         if f.is_file() and "__pycache__" not in str(f)
     ]
