@@ -1,15 +1,15 @@
 # SRE Incident Response - OpenEnv
 
-An OpenEnv-style environment for evaluating agents on a real SRE incident-response task: investigating an API contract breakage, identifying the buggy source change, validating the fix, and submitting for grading.
+An OpenEnv-style environment for evaluating agents on realistic SRE incident-response tasks: investigating alerts, reading logs, fixing broken services, validating the fix, and submitting for grading.
 
 ## Features
-- **Single-task rehearsal**: One runnable task focused on a FastAPI status code mismatch.
+- **Three-task benchmark**: Easy, medium, and hard incident scenarios with distinct failure modes.
 - **Action Space**: Simple `terminal`, `editor`, and `submit` tools.
 - **Provider Pattern**: Swappable data sources for logs, metrics, and execution.
 - **Deterministic Grading**: Using `difflib`, `pytest` exit codes, and regex-based RCA scoring.
 
 ## Motivation
-This environment models a real operational workflow humans perform during incident response: inspect alerts, read logs, inspect source, apply a fix, run verification, and submit a resolution. It is designed as a lightweight rehearsal branch for a broader SRE benchmark.
+This environment models a real operational workflow humans perform during incident response: inspect alerts, read logs, inspect source, apply a fix, run verification, and submit a resolution. The tasks progress from a simple API contract bug to retry logic drift and finally a multi-service timeout incident with an RCA requirement.
 
 ## Interface
 Action space:
@@ -109,15 +109,22 @@ The default OpenAI-compatible endpoint used by this repo is:
 https://router.huggingface.co/v1
 ```
 
-## Task 1: FastAPI Status Code Mismatch
+## Tasks
+
+### Task 1: FastAPI Status Code Mismatch
 Difficulty: easy
 
 The item-creation flow violates its API contract. The agent must inspect logs and source, identify the bug, fix it, run tests, and submit the workspace for deterministic grading.
 
-Baseline score:
-- `task1_wrong_status`: `1.00` on a successful local run with model-backed inference
+### Task 2: Off-by-One Retry Bug
+Difficulty: medium
 
-Task 2 and task 3 are still pending on this rehearsal branch.
+The upstream retry handler gives up one attempt too early. The agent must inspect logs, patch the retry loop, verify the fix, and write an `RCA.md`.
+
+### Task 3: Cascading Timeout Failure
+Difficulty: hard
+
+Service A times out before Service B can complete a slower enrichment path. The agent must inspect logs across both services, adjust the caller timeout, improve Service B latency, verify the tests, and write an `RCA.md`.
 
 ## License
 MIT

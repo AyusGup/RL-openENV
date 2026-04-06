@@ -32,4 +32,71 @@ def test_registry_discovers_single_task() -> None:
     registry = TaskRegistry(fixtures_dir)
 
     assert registry.default_task_id() == "task1_wrong_status"
-    assert [task.id for task in registry.list_tasks()] == ["task1_wrong_status"]
+    assert [task.id for task in registry.list_tasks()] == [
+        "task1_wrong_status",
+        "task2_retry_logic",
+        "task3_cascading_failure",
+    ]
+
+
+def test_registry_exposes_new_task_metadata() -> None:
+    fixtures_dir = Path(__file__).resolve().parents[1] / "fixtures"
+    registry = TaskRegistry(fixtures_dir)
+
+    task2 = registry.get_task("task2_retry_logic")
+    task3 = registry.get_task("task3_cascading_failure")
+
+    assert task2 is not None
+    assert task2.difficulty == "medium"
+    assert task2.max_steps == 16
+    assert "app/retry_handler.py" in task2.expected_fix_files
+    assert task3 is not None
+    assert task3.difficulty == "hard"
+    assert task3.max_steps == 24
+    assert "service_a/main.py" in task3.expected_fix_files
+
+
+def test_grader_counts_expected_new_file_creation(tmp_path: Path) -> None:
+    fixtures_dir = Path(__file__).resolve().parents[1] / "fixtures"
+    workspace_root = tmp_path / "workspace"
+    env = SREEnvironment(fixtures_dir, workspace_root)
+    registry = TaskRegistry(fixtures_dir)
+    task = registry.get_task("task2_retry_logic")
+
+    assert task is not None
+    asyncio.run(env.reset(task.id))
+
+    retry_handler = workspace_root / "app" / "retry_handler.py"
+    retry_handler.write_text(
+        retry_handler.read_text(encoding="utf-8").replace(
+            "range(max_retries)", "range(max_retries + 1)"
+        ),
+        encoding="utf-8",
+    )
+    (workspace_root / "RCA.md").write_text(
+        "# Incident RCA Report\n\n## Root Cause\nretry loop\n\n## Fix Applied\nupdated retries\n",
+        encoding="utf-8",
+    )
+
+    score = SREGrader()._check_file_changes(
+        task.expected_fix_files,
+        fixtures_dir / task.id,
+        workspace_root,
+    )
+    assert score == 1.0
+
+
+def test_rca_templates_contain_required_sections() -> None:
+    fixtures_dir = Path(__file__).resolve().parents[1] / "fixtures"
+
+    task2_template = (fixtures_dir / "task2_retry_logic" / "RCA_template.md").read_text(
+        encoding="utf-8"
+    )
+    task3_template = (
+        fixtures_dir / "task3_cascading_failure" / "RCA_template.md"
+    ).read_text(encoding="utf-8")
+
+    assert "## Root Cause" in task2_template
+    assert "## Fix Applied" in task2_template
+    assert "## Root Cause" in task3_template
+    assert "## Prevention" in task3_template

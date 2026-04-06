@@ -26,9 +26,11 @@ def test_reset_defaults_to_single_task(tmp_path: Path) -> None:
     body = response.json()
     assert body["alert_message"]
     assert "app/main.py" in body["file_tree"]
+    state = client.get("/state").json()
+    assert state["max_steps"] == 8
 
 
-def test_tasks_endpoint_lists_single_task(tmp_path: Path) -> None:
+def test_tasks_endpoint_lists_all_tasks(tmp_path: Path) -> None:
     client = build_client(tmp_path)
 
     response = client.get("/tasks")
@@ -39,8 +41,27 @@ def test_tasks_endpoint_lists_single_task(tmp_path: Path) -> None:
             "id": "task1_wrong_status",
             "name": "Task 1: FastAPI Status Code Mismatch",
             "difficulty": "easy",
-        }
+        },
+        {
+            "id": "task2_retry_logic",
+            "name": "Task 2: Off-by-One Retry Bug",
+            "difficulty": "medium",
+        },
+        {
+            "id": "task3_cascading_failure",
+            "name": "Task 3: Cascading Timeout Failure",
+            "difficulty": "hard",
+        },
     ]
+
+
+def test_health_endpoint_returns_ok(tmp_path: Path) -> None:
+    client = build_client(tmp_path)
+
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
 
 
 def test_step_and_state_round_trip(tmp_path: Path) -> None:
@@ -79,3 +100,44 @@ def test_submit_returns_normalized_score(tmp_path: Path) -> None:
     assert response.status_code == 200
     assert 0.0 <= response.json()["info"]["score"] <= 1.0
     assert 0.0 <= response.json()["reward"]["value"] <= 1.0
+
+
+def test_step_limit_auto_grades_workspace(tmp_path: Path) -> None:
+    client = build_client(tmp_path)
+    client.post("/reset", json={"task_id": "task1_wrong_status"})
+    app_module.env.state.max_steps = 1
+
+    response = client.post("/step", json={"tool": "terminal", "command": "cat app/main.py"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["done"] is True
+    assert body["info"]["score"] is not None
+    assert "auto-graded" in body["info"]["message"]
+
+
+def test_reset_can_target_task2(tmp_path: Path) -> None:
+    client = build_client(tmp_path)
+
+    response = client.post("/reset", json={"task_id": "task2_retry_logic"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "app/retry_handler.py" in body["file_tree"]
+    assert "RCA.md" not in body["file_tree"]
+    state = client.get("/state").json()
+    assert state["max_steps"] == 16
+
+
+def test_reset_can_target_task3(tmp_path: Path) -> None:
+    client = build_client(tmp_path)
+
+    response = client.post("/reset", json={"task_id": "task3_cascading_failure"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "service_a/main.py" in body["file_tree"]
+    assert "service_b/database.py" in body["file_tree"]
+    assert "RCA_template.md" in body["file_tree"]
+    state = client.get("/state").json()
+    assert state["max_steps"] == 24
