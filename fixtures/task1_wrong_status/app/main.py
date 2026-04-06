@@ -1,4 +1,4 @@
-"""A FastAPI application with a status code bug."""
+"""A FastAPI application for item management."""
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
@@ -14,11 +14,8 @@ db = []
 @app.post("/api/items")
 def create_item(item: Item):
     """Create an item and return a JSONResponse.
-
-    The bug is returning 200 OK instead of the expected 201 Created status code.
     """
     db.append(item.dict())
-    # BUG: status_code=200, should be 201 for a resource creation
     return JSONResponse(
         content={"id": len(db), "item": item.dict()},
         status_code=200
