@@ -24,6 +24,7 @@ class TaskConfig(BaseModel):
     id: str
     name: str
     difficulty: str
+    max_steps: int = 50
     alert_message: str = ""
     alert_source: str = "prometheus-alertmanager"
     severity: str = "MEDIUM"
