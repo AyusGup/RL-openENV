@@ -1,48 +1,54 @@
 FROM python:3.11-slim AS builder
 
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
-ENV PIP_DISABLE_PIP_VERSION_CHECK=1
-ENV PIP_NO_CACHE_DIR=1
-ENV VIRTUAL_ENV=/opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
+COPY --from=ghcr.io/astral-sh/uv:0.11.3 /uv /uvx /bin/
 
-WORKDIR /build
+WORKDIR /app
 
-RUN python -m venv "$VIRTUAL_ENV" \
-    && pip install --upgrade pip setuptools wheel
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
 
-COPY pyproject.toml README.md /build/
-COPY sre_env /build/sre_env
-COPY server /build/server
+COPY uv.lock pyproject.toml ./
 
-RUN pip install .
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-install-project --no-dev
+
+COPY sre_env ./sre_env
+COPY server ./server
+COPY README.md ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --no-editable
 
 
 FROM python:3.11-slim AS runtime
 
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
-ENV PIP_DISABLE_PIP_VERSION_CHECK=1
-ENV VIRTUAL_ENV=/opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
-ENV HOME=/app
-ENV OPENENV_REPO_ROOT=/app
-
 WORKDIR /app
 
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PATH="/app/.venv/bin:$PATH" \
+    OPENENV_REPO_ROOT=/app
+
 RUN addgroup --system appgroup \
-    && adduser --system --ingroup appgroup --home /app appuser \
+    && adduser --system --ingroup appgroup --home /app --no-create-home appuser \
     && mkdir -p /app/workspace
 
-COPY --from=builder /opt/venv /opt/venv
+# Copy only the built venv plus runtime assets. The application code is
+# already installed into the venv via `uv sync --no-editable` in the builder.
+COPY --from=builder --chown=appuser:appgroup /app/.venv /app/.venv
 COPY --chown=appuser:appgroup openenv.yaml /app/openenv.yaml
-COPY --chown=appuser:appgroup sre_env /app/sre_env
-COPY --chown=appuser:appgroup server /app/server
+COPY --chown=appuser:appgroup docker-entrypoint.sh /app/docker-entrypoint.sh
 COPY --chown=appuser:appgroup fixtures /app/fixtures
+
+RUN chmod +x /app/docker-entrypoint.sh
 
 USER appuser
 
 EXPOSE 7860
 
-CMD ["python", "-m", "uvicorn", "server.app:app", "--host", "0.0.0.0", "--port", "7860"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:${PORT:-7860}/health')"
+
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
