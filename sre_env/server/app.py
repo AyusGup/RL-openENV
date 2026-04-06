@@ -26,6 +26,11 @@ class ResetRequest(BaseModel):
 async def root():
     return {"message": "SRE Incident Response Environment is running."}
 
+@app.get("/health")
+async def health():
+    """Container health probe endpoint."""
+    return {"status": "ok"}
+
 @app.get("/tasks", response_model=List[TaskSummary])
 async def list_tasks():
     """List all available incident scenarios."""

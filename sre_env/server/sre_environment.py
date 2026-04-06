@@ -67,6 +67,7 @@ class SREEnvironment:
             episode_id=str(uuid4()),
             task_id=resolved_task_id,
             task_name=task_config.name,
+            max_steps=task_config.max_steps,
             workspace_root=str(self.workspace_root),
         )
         
@@ -76,9 +77,12 @@ class SREEnvironment:
         # Get initial alert information
         alert_data = await self.alert_provider.get_alert(resolved_task_id)
 
+        file_tree = get_file_tree(self.workspace_root)
+        self.rewarder.seed_initial_files(file_tree)
+
         return SREObservation(
             alert_message=alert_data.get("message", ""),
-            file_tree=get_file_tree(self.workspace_root),
+            file_tree=file_tree,
         )
 
     async def step(self, action: SREAction) -> SREStepResult:
@@ -106,8 +110,7 @@ class SREEnvironment:
 
         # 1. Update step count
         self.state.step_count += 1
-        if self.state.step_count >= self.state.max_steps:
-             self.state.done = True
+        reached_step_limit = self.state.step_count >= self.state.max_steps
 
         # 2. Execute tool
         observation = SREObservation()
@@ -157,19 +160,36 @@ class SREEnvironment:
             observation.stderr = f"Error: Unsupported tool {action.tool}"
             last_action_error = observation.stderr
 
+        if reached_step_limit and action.tool != "submit":
+            self.state.done = True
+            fixture_path = self.fixtures_dir / self.state.task_id
+            final_score = await self.grader.grade_episode(
+                task_config, fixture_path, self.workspace_root
+            )
+            info_message = (
+                f"Step budget exhausted at {self.state.step_count}/{self.state.max_steps}. "
+                f"Workspace auto-graded with FINAL SCORE: {final_score:.2f}"
+            )
+
         # 3. Always refresh file tree
         observation.file_tree = get_file_tree(self.workspace_root)
 
         # 4. Calculate Step Reward
         reward_value = 0.0
-        if action.tool != "submit":
-            reward_value = self.rewarder.calculate_reward(action)
+        if final_score is not None:
+            reward_value = final_score
+        elif action.tool != "submit":
+            reward_value = self.rewarder.calculate_reward(
+                action,
+                observation,
+                task_config.expected_fix_files,
+            )
         else:
             reward_value = final_score or 0.0
         self.state.cumulative_reward += reward_value
 
         info = SREStepInfo(
-            score=final_score if action.tool == "submit" else None,
+            score=final_score,
             message=info_message,
             last_action_error=last_action_error,
         )

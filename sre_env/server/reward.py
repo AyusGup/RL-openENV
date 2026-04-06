@@ -1,25 +1,35 @@
-"""Advanced reward shaping for SRE incident response."""
+"""Outcome-aware reward shaping for SRE incident response."""
 
-from typing import Set
+from pathlib import PurePosixPath
+from typing import Iterable, Set
 
-from ..models import SREAction
+from ..models import SREAction, SREObservation
 
 
 class SREStepRewarder:
-    """Calculates granular rewards at every step to guide the agent."""
+    """Calculate conservative, less gameable partial rewards."""
 
     def __init__(self):
+        self.initial_files: Set[str] = set()
         self.seen_logs: Set[str] = set()
         self.seen_source: Set[str] = set()
         self.seen_commands: Set[str] = set()
+        self.seen_test_runs: Set[str] = set()
+        self.rewarded_edits: Set[str] = set()
 
-    def calculate_reward(self, action: SREAction) -> float:
-        """Assign rewards for diagnostic actions.
+    def calculate_reward(
+        self,
+        action: SREAction,
+        observation: SREObservation,
+        expected_fix_files: Iterable[str],
+    ) -> float:
+        """Assign conservative rewards for meaningful progress.
 
-        This helps the agent learn that reading logs and source code
-        is part of a successful SRE workflow.
+        The final task score should remain the dominant signal. Step rewards are
+        intentionally small and task-aware to discourage reward hacking.
         """
         reward = -0.01
+        expected_files = {path.replace("\\", "/") for path in expected_fix_files}
 
         if action.tool == "terminal":
             cmd = action.command.lower()
@@ -36,27 +46,49 @@ class SREStepRewarder:
             ):
                 reward -= 0.25
 
-            # 1. Reward for reading logs (first time only)
-            if "cat " in cmd and ".log" in cmd:
-                log_name = cmd.split("cat ")[-1].strip()
-                if log_name not in self.seen_logs:
+            if observation.exit_code == 0 and cmd.startswith("cat "):
+                target = cmd.split("cat ", maxsplit=1)[-1].strip().replace("\\", "/")
+                if target.startswith("logs/") and target.endswith(".log") and target not in self.seen_logs:
                     reward += 0.05
-                    self.seen_logs.add(log_name)
-
-            # 2. Reward for inspecting source code (first time)
-            if "cat " in cmd and ".py" in cmd:
-                py_name = cmd.split("cat ")[-1].strip()
-                if py_name not in self.seen_source:
+                    self.seen_logs.add(target)
+                elif self._is_relevant_source_file(target) and target not in self.seen_source:
                     reward += 0.05
-                    self.seen_source.add(py_name)
+                    self.seen_source.add(target)
 
             if "pytest" in cmd:
-                reward += 0.02
+                if normalized_cmd not in self.seen_test_runs:
+                    reward += 0.01
+                    self.seen_test_runs.add(normalized_cmd)
+                if observation.exit_code == 0:
+                    reward += 0.04
 
         elif action.tool == "editor":
-            reward += 0.02 if action.file_content.strip() else -0.10
+            normalized_path = action.file_path.replace("\\", "/")
+            if not action.file_content.strip():
+                reward -= 0.10
+            elif normalized_path not in expected_files:
+                reward -= 0.03
+            elif normalized_path not in self.rewarded_edits:
+                if normalized_path == "RCA.md":
+                    reward += 0.04 if len(action.file_content.strip()) >= 120 else -0.02
+                else:
+                    reward += 0.03
+                self.rewarded_edits.add(normalized_path)
 
         elif action.tool == "submit":
-            reward -= 0.01
+            return 0.0
 
         return reward
+
+    def _is_relevant_source_file(self, target: str) -> bool:
+        """Return whether a read target looks like task source code."""
+        path = PurePosixPath(target)
+        if path.suffix != ".py":
+            return False
+        if target not in self.initial_files:
+            return False
+        return path.parts[:1] in {("app",), ("service_a",), ("service_b",)}
+
+    def seed_initial_files(self, file_tree: Iterable[str]) -> None:
+        """Register the files that existed at the start of the episode."""
+        self.initial_files = {path.replace("\\", "/") for path in file_tree}

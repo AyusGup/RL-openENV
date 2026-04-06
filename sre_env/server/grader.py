@@ -53,21 +53,24 @@ class SREGrader:
         """Compare workspace vs original fixture for modified files."""
         if not expected_files:
             return 1.0
-            
+
         modified_count = 0
         for rel_path in expected_files:
             orig = fixture_path / rel_path
             new = workspace_path / rel_path
-            
-            if not orig.exists() or not new.exists():
+
+            if orig.exists() and new.exists():
+                with open(orig, "r", encoding="utf-8") as f_orig, open(
+                    new, "r", encoding="utf-8"
+                ) as f_new:
+                    if f_orig.read() != f_new.read():
+                        modified_count += 1
                 continue
-                
-            # If the files are different, the agent modified it
-            with open(orig, "r", encoding="utf-8") as f_orig, open(
-                new, "r", encoding="utf-8"
-            ) as f_new:
-                if f_orig.read() != f_new.read():
-                    modified_count += 1
+
+            if not orig.exists() and new.exists():
+                with open(new, "r", encoding="utf-8") as f_new:
+                    if f_new.read().strip():
+                        modified_count += 1
 
         return modified_count / len(expected_files)
 
