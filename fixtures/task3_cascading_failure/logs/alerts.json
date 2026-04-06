@@ -1,0 +1,5 @@
+{
+  "service": "service_a",
+  "alert": "service_b_unhealthy",
+  "threshold": "5 consecutive failures"
+}

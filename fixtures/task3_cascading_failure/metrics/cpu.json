@@ -1,0 +1,14 @@
+{
+  "window": "2026-03-25T03:10:00Z/2026-03-25T03:15:00Z",
+  "service_a": {
+    "cpu_utilization": 0.44,
+    "memory_utilization": 0.52,
+    "pod_restarts": 0
+  },
+  "service_b": {
+    "cpu_utilization": 0.58,
+    "memory_utilization": 0.71,
+    "db_pool_utilization": 0.83,
+    "pod_restarts": 0
+  }
+}
