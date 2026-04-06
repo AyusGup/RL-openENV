@@ -40,37 +40,18 @@ State model:
 - `done`
 - `workspace_root`
 
-## Getting Started
-To install dependencies:
+## Linux Setup
+From the repo root, create a virtual environment and install dependencies:
 ```bash
-pip install -e .
-```
-
-To run the environment server:
-```bash
-python -m sre_env.server.app
-```
-
-To run the baseline inference script:
-```bash
-python inference.py
-```
-
-The inference client uses the OpenAI-compatible model endpoint to choose the next environment action step by step and emits the required `[START]`, `[STEP]`, and `[END]` logs.
-
-To validate the OpenEnv manifest locally:
-```bash
-openenv validate
-```
-
-## WSL Setup
-From WSL, create a Linux virtual environment in the repo root:
-```bash
-cd /mnt/c/Users/ag835/My_projects/rl-openenv
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -e .
+```
+
+Validate the OpenEnv manifest locally:
+```bash
+openenv validate
 ```
 
 Start the environment server in one terminal:
@@ -79,16 +60,20 @@ source .venv/bin/activate
 python -m uvicorn server.app:app --host 127.0.0.1 --port 7860
 ```
 
-In a second terminal, set the required inference variables and run:
+In a second terminal, activate the environment, set the inference variables, and run the baseline client:
 ```bash
 source .venv/bin/activate
+export OPENENV_BASE_URL="http://127.0.0.1:7860"
+export SRE_TASK_NAME="task1_wrong_status"
 export API_BASE_URL="https://router.huggingface.co/v1"
 export MODEL_NAME="Qwen/Qwen2.5-72B-Instruct"
 export OPENAI_API_KEY="hf_your_token_here"
 python inference.py
 ```
 
-You can copy the template in `.env.example` into your shell manually or load it with your preferred dotenv workflow. Do not commit real secrets.
+The inference client uses the OpenAI-compatible model endpoint to choose the next environment action step by step and emits the required `[START]`, `[STEP]`, and `[END]` logs.
+
+You can load values from `.env.example` using your preferred dotenv workflow. Do not commit real secrets.
 
 ## Hugging Face Secrets
 For Hugging Face Spaces, add these in your Space settings:
