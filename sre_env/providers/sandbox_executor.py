@@ -90,8 +90,6 @@ class SandboxExecutor(CommandExecutor):
         if cmd in {"python", "pytest"}:
             return self._python_like_command(parts, cwd)
 
-        raise ValueError(f"Unsupported command '{parts[0]}'.")
-
     def _cat_command(self, target: str, cwd: Path) -> Sequence[str]:
         resolved = self._resolve_workspace_path(target, cwd)
         if os.name == "nt":
