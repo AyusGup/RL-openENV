@@ -28,6 +28,3 @@ fixtures/*/workspace/
 
 # Environment
 .env
-
-# Logs
-*.log

@@ -1,0 +1,3 @@
+2026-03-25 14:32:01 WARN  [api-gateway] POST /api/items returned 200 OK, expected 201 Created
+2026-03-25 14:32:01 ERROR [client-sdk] CreateItem contract check failed: expected HTTP 201 for resource creation
+2026-03-25 14:32:02 WARN  [monitoring] Alert triggered: API contract violation on /api/items create flow
