@@ -4,7 +4,7 @@ An OpenEnv-style environment for evaluating agents on realistic SRE incident-res
 
 ## Features
 - **Three-task benchmark**: Easy, medium, and hard incident scenarios with distinct failure modes.
-- **Action Space**: Simple `terminal`, `editor`, and `submit` tools.
+- **Action Space**: Simple `terminal`, `editor`, `replay`, and `submit` tools.
 - **Provider Pattern**: Swappable data sources for logs, metrics, and execution.
 - **Deterministic Grading**: Using `difflib`, `pytest` exit codes, and regex-based RCA scoring.
 
@@ -15,6 +15,7 @@ This environment models a real operational workflow humans perform during incide
 Action space:
 - `terminal`: run one workspace-scoped shell command
 - `editor`: replace one file with full contents
+- `replay`: run a deterministic task-specific validation probe
 - `submit`: finish the episode and trigger grading
 
 Observation model:
