@@ -29,5 +29,4 @@ fixtures/*/workspace/
 # Environment
 .env
 
-# Logs
-*.log
+.test-tmp

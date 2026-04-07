@@ -1,0 +1,8 @@
+2026-03-25 09:15:33 ERROR [retry_handler] MaxRetriesExceeded: Failed after 3 retries for /api/upstream/health
+2026-03-25 09:15:33 INFO  [retry_handler] Attempt 1/3: GET /api/upstream/health -> 503
+2026-03-25 09:15:35 INFO  [retry_handler] Attempt 2/3: GET /api/upstream/health -> 503
+2026-03-25 09:15:39 INFO  [retry_handler] Attempt 3/3: GET /api/upstream/health -> 503
+2026-03-25 09:15:39 ERROR [main] Upstream health check failed - circuit breaker OPEN
+2026-03-25 09:15:40 INFO  [upstream] /api/upstream/health recovered and started returning 200
+
+

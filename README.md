@@ -1,20 +1,21 @@
 # SRE Incident Response - OpenEnv
 
-An OpenEnv-style environment for evaluating agents on a real SRE incident-response task: investigating an API contract breakage, identifying the buggy source change, validating the fix, and submitting for grading.
+An OpenEnv-style environment for evaluating agents on realistic SRE incident-response tasks: investigating alerts, reading logs, fixing broken services, validating the fix, and submitting for grading.
 
 ## Features
-- **Single-task rehearsal**: One runnable task focused on a FastAPI status code mismatch.
-- **Action Space**: Simple `terminal`, `editor`, and `submit` tools.
+- **Three-task benchmark**: Easy, medium, and hard incident scenarios with distinct failure modes.
+- **Action Space**: Simple `terminal`, `editor`, `replay`, and `submit` tools.
 - **Provider Pattern**: Swappable data sources for logs, metrics, and execution.
 - **Deterministic Grading**: Using `difflib`, `pytest` exit codes, and regex-based RCA scoring.
 
 ## Motivation
-This environment models a real operational workflow humans perform during incident response: inspect alerts, read logs, inspect source, apply a fix, run verification, and submit a resolution. It is designed as a lightweight rehearsal branch for a broader SRE benchmark.
+This environment models a real operational workflow humans perform during incident response: inspect alerts, read logs, inspect source, apply a fix, run verification, and submit a resolution. The tasks progress from a simple API contract bug to retry logic drift and finally a multi-service timeout incident with an RCA requirement.
 
 ## Interface
 Action space:
 - `terminal`: run one workspace-scoped shell command
 - `editor`: replace one file with full contents
+- `replay`: run a deterministic task-specific validation probe
 - `submit`: finish the episode and trigger grading
 
 Observation model:
@@ -40,37 +41,28 @@ State model:
 - `done`
 - `workspace_root`
 
-## Getting Started
-To install dependencies:
-```bash
-pip install -e .
+Python client (typed async):
+```python
+from sre_env import SREAction, SREEnv
+
+async with SREEnv("http://127.0.0.1:7860") as env:
+    observation = await env.reset(task_id="task2_retry_logic")
+    result = await env.step(SREAction(tool="terminal", command="cat app/retry_handler.py"))
+    state = await env.state()
 ```
 
-To run the environment server:
+## Linux Setup
+From the repo root, create a virtual environment and install dependencies:
 ```bash
-python -m sre_env.server.app
-```
-
-To run the baseline inference script:
-```bash
-python inference.py
-```
-
-The inference client uses the OpenAI-compatible model endpoint to choose the next environment action step by step and emits the required `[START]`, `[STEP]`, and `[END]` logs.
-
-To validate the OpenEnv manifest locally:
-```bash
-openenv validate
-```
-
-## WSL Setup
-From WSL, create a Linux virtual environment in the repo root:
-```bash
-cd /mnt/c/Users/ag835/My_projects/rl-openenv
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -e .
+```
+
+Validate the OpenEnv manifest locally:
+```bash
+openenv validate
 ```
 
 Start the environment server in one terminal:
@@ -79,24 +71,30 @@ source .venv/bin/activate
 python -m uvicorn server.app:app --host 127.0.0.1 --port 7860
 ```
 
-In a second terminal, set the required inference variables and run:
+In a second terminal, activate the environment, set the inference variables, and run the baseline client:
 ```bash
 source .venv/bin/activate
+export OPENENV_BASE_URL="http://127.0.0.1:7860"
+export SRE_TASK_NAME="task1_wrong_status"
 export API_BASE_URL="https://router.huggingface.co/v1"
 export MODEL_NAME="Qwen/Qwen2.5-72B-Instruct"
-export OPENAI_API_KEY="hf_your_token_here"
+export HF_TOKEN="hf_your_token_here"
 python inference.py
 ```
 
-You can copy the template in `.env.example` into your shell manually or load it with your preferred dotenv workflow. Do not commit real secrets.
+The inference client uses the OpenAI-compatible model endpoint to choose the next environment action step by step and emits the required `[START]`, `[STEP]`, and `[END]` logs.
+By default, `inference.py` runs `task1_wrong_status`. Set `SRE_TASK_NAME` to a specific task id to run a different task.
+It uses the typed async SDK wrapper (`SREEnv`/`SREAction`) for `reset`, `step`, and `state` calls.
+
+You can load values from `.env.example` using your preferred dotenv workflow. Do not commit real secrets.
 
 ## Hugging Face Secrets
 For Hugging Face Spaces, add these in your Space settings:
 - `API_BASE_URL`
 - `MODEL_NAME`
-- `OPENAI_API_KEY`
+- `HF_TOKEN`
 
-Put `OPENAI_API_KEY` in Space Secrets, not plain Variables.
+Put `HF_TOKEN` in Space Secrets, not plain Variables.
 
 To create a token:
 1. Sign in to Hugging Face.
@@ -109,15 +107,22 @@ The default OpenAI-compatible endpoint used by this repo is:
 https://router.huggingface.co/v1
 ```
 
-## Task 1: FastAPI Status Code Mismatch
+## Tasks
+
+### Task 1: FastAPI Status Code Mismatch
 Difficulty: easy
 
 The item-creation flow violates its API contract. The agent must inspect logs and source, identify the bug, fix it, run tests, and submit the workspace for deterministic grading.
 
-Baseline score:
-- `task1_wrong_status`: `1.00` on a successful local run with model-backed inference
+### Task 2: Off-by-One Retry Bug
+Difficulty: medium
 
-Task 2 and task 3 are still pending on this rehearsal branch.
+The upstream retry handler gives up one attempt too early. The agent must inspect logs, patch the retry loop, verify the fix, and write an `RCA.md`.
+
+### Task 3: Cascading Timeout Failure
+Difficulty: hard
+
+Service A times out before Service B can complete a slower enrichment path. The agent must inspect logs across both services, adjust the caller timeout, improve Service B latency, verify the tests, and write an `RCA.md`.
 
 ## License
 MIT
