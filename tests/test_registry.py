@@ -86,6 +86,35 @@ def test_grader_counts_expected_new_file_creation(tmp_path: Path) -> None:
     assert score == 1.0
 
 
+def test_grader_runs_hidden_fixture_tests_for_task2(tmp_path: Path) -> None:
+    fixtures_dir = Path(__file__).resolve().parents[1] / "fixtures"
+    workspace_root = tmp_path / "workspace"
+    env = SREEnvironment(fixtures_dir, workspace_root)
+    registry = TaskRegistry(fixtures_dir)
+    task = registry.get_task("task2_retry_logic")
+
+    assert task is not None
+    asyncio.run(env.reset(task.id))
+    assert not (workspace_root / "tests").exists()
+
+    retry_handler = workspace_root / "app" / "retry_handler.py"
+    retry_handler.write_text(
+        retry_handler.read_text(encoding="utf-8").replace(
+            "range(max_retries)", "range(max_retries + 1)"
+        ),
+        encoding="utf-8",
+    )
+    (workspace_root / "RCA.md").write_text(
+        "# Incident RCA Report\n\n## Root Cause\nretry loop\n\n## Fix Applied\nupdated retries\n",
+        encoding="utf-8",
+    )
+
+    test_score = asyncio.run(
+        SREGrader()._check_tests(task.id, fixtures_dir / task.id, workspace_root)
+    )
+    assert test_score == 1.0
+
+
 def test_rca_templates_contain_required_sections() -> None:
     fixtures_dir = Path(__file__).resolve().parents[1] / "fixtures"
 

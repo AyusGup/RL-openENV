@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -18,6 +19,31 @@ TASK_NAME = os.getenv("SRE_TASK_NAME") or "task1_wrong_status"
 BENCHMARK = os.getenv("SRE_BENCHMARK") or "sre_env"
 DEFAULT_MAX_STEPS = 8
 SUCCESS_SCORE_THRESHOLD = 0.1
+
+
+def task_requires_rca(task_name: str) -> bool:
+    """Return whether the task requires an RCA.md before submission."""
+    candidate_paths = [
+        Path(__file__).resolve().parent / "fixtures" / task_name / "task_config.json",
+        Path("fixtures") / task_name / "task_config.json",
+    ]
+    for config_path in candidate_paths:
+        if not config_path.exists():
+            continue
+        try:
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        expected_fix_files = config.get("expected_fix_files") or []
+        return "RCA.md" in expected_fix_files
+
+    # Conservative fallback for current benchmark tasks when config is unavailable.
+    return task_name in {
+        "task1_wrong_status",
+        "task2_retry_logic",
+        "task3_cascading_failure",
+    }
+
 
 ACTION_SYSTEM_PROMPT = """
 You are controlling an SRE incident-response environment.
@@ -37,10 +63,12 @@ Rules:
 - Use editor only after you have inspected the target file.
 - For editor actions, set file_path and leave file_content empty. The client will request the full file contents separately.
 - For terminal actions, set command and leave file_path/file_content empty.
-- For replay, set command to the replay name (task1: create_item_contract).
+- For replay, set command to the replay name:
+  - task1_wrong_status: create_item_contract
+  - task2_retry_logic: retry_health_contract
+  - task3_cascading_failure: cascading_timeout_budget
 - For submit, leave command/file_path/file_content empty.
 - Prefer short deterministic commands like: cat logs/error.log, cat app/main.py, ls .
-- Avoid repeating the same read command unless you expect genuinely new information.
 - Do not repeat `cat` on the same file unless that file was edited since your last read.
 - Treat RCA.md as a final incident document: investigate first, fix and verify the code, then complete the RCA near the end.
 - Create RCA.md before submit with headings: Root Cause, Affected Services, Fix Applied, Prevention.
@@ -187,14 +215,14 @@ def choose_next_action(
     """Ask the model to choose the next environment action."""
     step_score = latest_step_result["info"].get("score")
     step_score_display = "null" if step_score is None else f"{float(step_score):.3f}"
+    has_rca = "RCA.md" in file_tree
+    replay_succeeded = history_has_successful_replay(history)
     prompt = build_action_prompt(
         alert_message=alert_message,
         file_tree=file_tree,
         history=history,
         latest_observation=latest_step_result["observation"],
     )
-    has_rca = "RCA.md" in file_tree
-    replay_succeeded = history_has_successful_replay(history)
     prompt += (
         f"\nStep reward: {float(latest_step_result['reward']['value']):.2f}\n"
         f"Step done: {str(bool(latest_step_result['done'])).lower()}\n"
@@ -366,7 +394,8 @@ def build_rca_content(
         fix_applied = "Applied the code change required to align the implementation with the expected behavior and verified the fix with the available tests."
         prevention = "Keep regression tests for the incident pattern and document the operational checklist for similar alerts."
 
-    header = "# Incident RCA Report" if "# Incident RCA Report" in template else "# RCA Report"
+    _ = template
+    header = "# Incident RCA Report"
     return (
         f"{header}\n\n"
         f"## Root Cause\n{root_cause}\n\n"
@@ -387,6 +416,9 @@ def choose_forced_action(
     max_steps: int,
 ) -> Optional[Dict[str, str]]:
     """Inject a small amount of task-aware structure into the baseline."""
+    if not task_requires_rca(task_name):
+        return None
+
     has_rca = "RCA.md" in file_tree or "RCA.md" in known_files
     if has_rca:
         return None
@@ -492,6 +524,7 @@ def main() -> None:
 
                     if (
                         action["tool"] == "submit"
+                        and task_requires_rca(TASK_NAME)
                         and "RCA.md" not in file_tree
                         and "RCA.md" not in known_files
                     ):

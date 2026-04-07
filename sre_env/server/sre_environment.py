@@ -61,7 +61,12 @@ class SREEnvironment:
 
         # Prepare clear workspace
         fixture_path = self.fixtures_dir / resolved_task_id
-        extra_ignores = ("tests",) if resolved_task_id == "task1_wrong_status" else ()
+        extra_ignores: tuple[str, ...] = ()
+        if resolved_task_id == "task1_wrong_status":
+            extra_ignores = ("tests",)
+        elif resolved_task_id in {"task2_retry_logic", "task3_cascading_failure"}:
+            extra_ignores = ("tests", "RCA_template.md")
+
         if not setup_workspace(
             fixture_path,
             self.workspace_root,
@@ -167,8 +172,8 @@ class SREEnvironment:
                     observation.stdout = replay_result.evidence_log
                     observation.exit_code = 0 if replay_result.success else 1
                     info_message = (
-                        f"Replay '{replay_result.replay_name}' "
-                        f"completed with status={replay_result.status_code} "
+                        f"Replay '{replay_result.replay_name}' completed with "
+                        f"status={replay_result.status_code} "
                         f"success={str(replay_result.success).lower()}."
                     )
                 except Exception as e:

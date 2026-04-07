@@ -74,7 +74,7 @@ class SREStepRewarder:
                 else:
                     reward += 0.03
                 self.rewarded_edits.add(normalized_path)
-            # Allow an immediate validation read after edits by clearing stale read memory.
+            # Allow one immediate validation read after edits.
             self.last_cat_stdout_by_target.pop(normalized_path, None)
 
         elif action.tool == "replay":

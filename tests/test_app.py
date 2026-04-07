@@ -28,7 +28,7 @@ def test_reset_defaults_to_single_task(tmp_path: Path) -> None:
     assert "app/main.py" in body["file_tree"]
     assert not any(path.startswith("tests/") for path in body["file_tree"])
     state = client.get("/state").json()
-    assert state["max_steps"] == 8
+    assert state["max_steps"] == 15
 
 
 def test_tasks_endpoint_lists_all_tasks(tmp_path: Path) -> None:
@@ -92,18 +92,48 @@ def test_task1_replay_runs_against_workspace_app(tmp_path: Path) -> None:
     body = response.json()
     assert "replay=create_item_contract" in body["observation"]["stdout"]
     assert "observed_status=200" in body["observation"]["stdout"]
-    assert body["reward"]["value"] > 0.0
+    assert "contract_ok=false" in body["observation"]["stdout"]
     assert body["done"] is False
 
 
-def test_replay_is_rejected_for_non_task1(tmp_path: Path) -> None:
+def test_task2_replay_runs_against_workspace_app(tmp_path: Path) -> None:
+    client = build_client(tmp_path)
+    client.post("/reset", json={"task_id": "task2_retry_logic"})
+
+    response = client.post("/step", json={"tool": "replay", "command": "retry_health_contract"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "replay=retry_health_contract" in body["observation"]["stdout"]
+    assert "observed_status=503" in body["observation"]["stdout"]
+    assert "contract_ok=false" in body["observation"]["stdout"]
+    assert body["done"] is False
+
+
+def test_task3_replay_checks_timeout_budget(tmp_path: Path) -> None:
+    client = build_client(tmp_path)
+    client.post("/reset", json={"task_id": "task3_cascading_failure"})
+
+    response = client.post(
+        "/step",
+        json={"tool": "replay", "command": "cascading_timeout_budget"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "replay=cascading_timeout_budget" in body["observation"]["stdout"]
+    assert "contract_ok=false" in body["observation"]["stdout"]
+    assert body["done"] is False
+
+
+def test_replay_rejects_invalid_name(tmp_path: Path) -> None:
     client = build_client(tmp_path)
     client.post("/reset", json={"task_id": "task2_retry_logic"})
 
     response = client.post("/step", json={"tool": "replay", "command": "create_item_contract"})
 
     assert response.status_code == 400
-    assert "Replay is not supported for task 'task2_retry_logic'" in response.json()["detail"]
+    assert "Unknown replay target for task2_retry_logic" in response.json()["detail"]
 
 
 def test_submit_returns_normalized_score(tmp_path: Path) -> None:
@@ -150,6 +180,8 @@ def test_reset_can_target_task2(tmp_path: Path) -> None:
     body = response.json()
     assert "app/retry_handler.py" in body["file_tree"]
     assert "RCA.md" not in body["file_tree"]
+    assert "RCA_template.md" not in body["file_tree"]
+    assert not any(path.startswith("tests/") for path in body["file_tree"])
     state = client.get("/state").json()
     assert state["max_steps"] == 16
 
@@ -163,6 +195,7 @@ def test_reset_can_target_task3(tmp_path: Path) -> None:
     body = response.json()
     assert "service_a/main.py" in body["file_tree"]
     assert "service_b/database.py" in body["file_tree"]
-    assert "RCA_template.md" in body["file_tree"]
+    assert "RCA_template.md" not in body["file_tree"]
+    assert not any(path.startswith("tests/") for path in body["file_tree"])
     state = client.get("/state").json()
     assert state["max_steps"] == 24

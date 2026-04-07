@@ -24,7 +24,7 @@ def test_rewarder_gives_small_replay_reward_and_bonus_on_success() -> None:
     rewarder.seed_initial_files(["app/main.py", "logs/error.log"])
 
     reward = rewarder.calculate_reward(
-        SREAction(tool="replay", command="create_item_contract"),
+        SREAction(tool="replay", command="retry_health_contract"),
         SREObservation(stdout="contract_ok=true\n", exit_code=0),
         expected_fix_files=["app/main.py"],
     )
@@ -32,9 +32,28 @@ def test_rewarder_gives_small_replay_reward_and_bonus_on_success() -> None:
     assert reward == 0.02
 
 
+def test_rewarder_penalizes_duplicate_replay() -> None:
+    rewarder = SREStepRewarder()
+    rewarder.seed_initial_files(["app/main.py"])
+
+    first = rewarder.calculate_reward(
+        SREAction(tool="replay", command="retry_health_contract"),
+        SREObservation(stdout="contract_ok=false\n", exit_code=1),
+        expected_fix_files=["app/main.py"],
+    )
+    second = rewarder.calculate_reward(
+        SREAction(tool="replay", command="retry_health_contract"),
+        SREObservation(stdout="contract_ok=false\n", exit_code=1),
+        expected_fix_files=["app/main.py"],
+    )
+
+    assert first == 0.01
+    assert second == -0.02
+
+
 def test_rewarder_rewards_rca_when_expected_fix_file() -> None:
     rewarder = SREStepRewarder()
-    rewarder.seed_initial_files(["app/main.py", "RCA_template.md"])
+    rewarder.seed_initial_files(["app/main.py"])
 
     reward = rewarder.calculate_reward(
         SREAction(

@@ -77,25 +77,19 @@ class SREGrader:
         return modified_count / len(expected_files)
 
     async def _check_tests(self, task_id: str, fixture_path: Path, workspace_path: Path) -> float:
-        """Run pytest in the workspace."""
-        if task_id == "task1_wrong_status":
-            return await self._check_task1_hidden_tests(fixture_path, workspace_path)
-
-        test_command = "py -3 -m pytest -q" if os.name == "nt" else "python -m pytest -q"
-        stdout, stderr, exit_code = await self.executor.execute(
-            test_command, workspace_path, timeout=30
-        )
-
-        # 1.0 if exit code 0 (all pass), 0.0 otherwise
-        return 1.0 if exit_code == 0 else 0.0
-
-    async def _check_task1_hidden_tests(self, fixture_path: Path, workspace_path: Path) -> float:
-        """Run task-1 tests from fixture path so tests are hidden from the agent workspace."""
+        """Run hidden fixture tests against the workspace code."""
+        _ = task_id
         tests_root = fixture_path / "tests"
         if not tests_root.exists():
             return 0.0
 
-        python_executable = "py" if os.name == "nt" else "python"
+        python_cmd = ["py", "-3", "-m", "pytest", "-q", str(tests_root)] if os.name == "nt" else [
+            "python",
+            "-m",
+            "pytest",
+            "-q",
+            str(tests_root),
+        ]
         env = os.environ.copy()
         existing_pythonpath = env.get("PYTHONPATH", "")
         env["PYTHONPATH"] = (
@@ -107,7 +101,7 @@ class SREGrader:
         try:
             completed = await asyncio.to_thread(
                 subprocess.run,
-                [python_executable, "-m", "pytest", "-q", str(tests_root)],
+                python_cmd,
                 cwd=str(workspace_path),
                 env=env,
                 capture_output=True,
