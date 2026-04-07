@@ -1,3 +1,12 @@
+---
+title: SRE Incident Response OpenEnv
+emoji: "🛠️"
+colorFrom: blue
+colorTo: green
+sdk: docker
+pinned: false
+---
+
 # SRE Incident Response - OpenEnv
 
 An OpenEnv-style environment for evaluating agents on realistic SRE incident-response tasks: investigating alerts, reading logs, fixing broken services, validating the fix, and submitting for grading.
@@ -41,6 +50,12 @@ State model:
 - `done`
 - `workspace_root`
 
+## Repository Layout
+- `openenv.yaml`: OpenEnv manifest used by `openenv validate` and `openenv push`.
+- `fixtures/`: task fixtures, hidden tests, and replay assets.
+- `pyproject.toml`, `uv.lock`, `Dockerfile`: self-contained deployment dependencies/build config.
+- `../inference.py`: optional runner script for model-driven evaluation, not required by package validation.
+
 Python client (typed async):
 ```python
 from sre_env import SREAction, SREEnv
@@ -52,7 +67,7 @@ async with SREEnv("http://127.0.0.1:7860") as env:
 ```
 
 ## Linux Setup
-From the repo root, create a virtual environment and install dependencies:
+From this directory (`sre_env`), create a virtual environment and install dependencies:
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
@@ -62,17 +77,19 @@ python -m pip install -e .
 
 Validate the OpenEnv manifest locally:
 ```bash
-openenv validate
+openenv validate .
 ```
 
 Start the environment server in one terminal:
 ```bash
 source .venv/bin/activate
-python -m uvicorn server.app:app --host 127.0.0.1 --port 7860
+cd ..
+python -m uvicorn sre_env.server.app:app --host 127.0.0.1 --port 7860
 ```
 
-In a second terminal, activate the environment, set the inference variables, and run the baseline client:
+In a second terminal (repo root), activate the environment, set the inference variables, and run the baseline client:
 ```bash
+cd ..
 source .venv/bin/activate
 export OPENENV_BASE_URL="http://127.0.0.1:7860"
 export SRE_TASK_NAME="task1_wrong_status"
@@ -95,6 +112,13 @@ For Hugging Face Spaces, add these in your Space settings:
 - `HF_TOKEN`
 
 Put `HF_TOKEN` in Space Secrets, not plain Variables.
+
+Deploy to Hugging Face Spaces with:
+```bash
+openenv push . --repo-id <your-username>/<space-name>
+```
+
+Runtime workspace is created under `workspace/` by default.
 
 To create a token:
 1. Sign in to Hugging Face.

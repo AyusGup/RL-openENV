@@ -5,14 +5,14 @@ from pathlib import Path
 from typing import Optional
 from uuid import uuid4
 
-from ..models import SREAction, SREObservation, SREReward, SREState, SREStepInfo, SREStepResult
-from ..providers.sandbox_executor import SandboxExecutor
-from ..providers.static_alert import StaticAlertProvider
-from ..tasks.registry import TaskRegistry
-from ..utils.file_ops import get_file_tree, setup_workspace
-from .grader import SREGrader
-from .replay import ReplayExecutor
-from .reward import SREStepRewarder
+from sre_env.models import SREAction, SREObservation, SREReward, SREState, SREStepInfo, SREStepResult
+from sre_env.providers.sandbox_executor import SandboxExecutor
+from sre_env.providers.static_alert import StaticAlertProvider
+from sre_env.tasks.registry import TaskRegistry
+from sre_env.utils.file_ops import get_file_tree, setup_workspace
+from sre_env.server.grader import SREGrader
+from sre_env.server.replay import ReplayExecutor
+from sre_env.server.reward import SREStepRewarder
 
 
 class SREEnvironment:

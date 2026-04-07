@@ -24,7 +24,8 @@ pytest-cache-files-*/
 
 # OpenEnv
 workspace/
-fixtures/*/workspace/
+sre_env/workspace/
+sre_env/fixtures/*/workspace/
 
 # Environment
 .env

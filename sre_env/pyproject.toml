@@ -28,7 +28,7 @@ dev = [
 ]
 
 [project.scripts]
-server = "server.app:main"
+server = "sre_env.server.app:main"
 
 [tool.ruff]
 line-length = 88
@@ -43,5 +43,8 @@ convention = "google"
 build-backend = "setuptools.build_meta"
 requires = ["setuptools>=61.0"]
 
+[tool.setuptools]
+py-modules = ["client", "models"]
+
 [tool.setuptools.packages.find]
-include = ["sre_env*", "server*"]
+include = ["providers*", "server*", "tasks*", "utils*"]

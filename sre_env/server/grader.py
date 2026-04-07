@@ -7,9 +7,9 @@ import subprocess
 from pathlib import Path
 from typing import List
 
-from ..providers.sandbox_executor import SandboxExecutor
-from ..tasks import RegexCheck
-from ..tasks.config import TaskConfig
+from sre_env.providers.sandbox_executor import SandboxExecutor
+from sre_env.tasks import RegexCheck
+from sre_env.tasks.config import TaskConfig
 
 
 class SREGrader:

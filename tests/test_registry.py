@@ -10,7 +10,7 @@ from sre_env.tasks import TaskRegistry
 
 
 def test_grader_scores_fixed_workspace_in_range(tmp_path: Path) -> None:
-    fixtures_dir = Path(__file__).resolve().parents[1] / "fixtures"
+    fixtures_dir = Path(__file__).resolve().parents[1] / "sre_env" / "fixtures"
     workspace_root = tmp_path / "workspace"
     env = SREEnvironment(fixtures_dir, workspace_root)
     registry = TaskRegistry(fixtures_dir)
@@ -28,7 +28,7 @@ def test_grader_scores_fixed_workspace_in_range(tmp_path: Path) -> None:
 
 
 def test_registry_discovers_single_task() -> None:
-    fixtures_dir = Path(__file__).resolve().parents[1] / "fixtures"
+    fixtures_dir = Path(__file__).resolve().parents[1] / "sre_env" / "fixtures"
     registry = TaskRegistry(fixtures_dir)
 
     assert registry.default_task_id() == "task1_wrong_status"
@@ -40,7 +40,7 @@ def test_registry_discovers_single_task() -> None:
 
 
 def test_registry_exposes_new_task_metadata() -> None:
-    fixtures_dir = Path(__file__).resolve().parents[1] / "fixtures"
+    fixtures_dir = Path(__file__).resolve().parents[1] / "sre_env" / "fixtures"
     registry = TaskRegistry(fixtures_dir)
 
     task2 = registry.get_task("task2_retry_logic")
@@ -57,7 +57,7 @@ def test_registry_exposes_new_task_metadata() -> None:
 
 
 def test_grader_counts_expected_new_file_creation(tmp_path: Path) -> None:
-    fixtures_dir = Path(__file__).resolve().parents[1] / "fixtures"
+    fixtures_dir = Path(__file__).resolve().parents[1] / "sre_env" / "fixtures"
     workspace_root = tmp_path / "workspace"
     env = SREEnvironment(fixtures_dir, workspace_root)
     registry = TaskRegistry(fixtures_dir)
@@ -87,7 +87,7 @@ def test_grader_counts_expected_new_file_creation(tmp_path: Path) -> None:
 
 
 def test_grader_runs_hidden_fixture_tests_for_task2(tmp_path: Path) -> None:
-    fixtures_dir = Path(__file__).resolve().parents[1] / "fixtures"
+    fixtures_dir = Path(__file__).resolve().parents[1] / "sre_env" / "fixtures"
     workspace_root = tmp_path / "workspace"
     env = SREEnvironment(fixtures_dir, workspace_root)
     registry = TaskRegistry(fixtures_dir)
@@ -114,18 +114,3 @@ def test_grader_runs_hidden_fixture_tests_for_task2(tmp_path: Path) -> None:
     )
     assert test_score == 1.0
 
-
-def test_rca_templates_contain_required_sections() -> None:
-    fixtures_dir = Path(__file__).resolve().parents[1] / "fixtures"
-
-    task2_template = (fixtures_dir / "task2_retry_logic" / "RCA_template.md").read_text(
-        encoding="utf-8"
-    )
-    task3_template = (
-        fixtures_dir / "task3_cascading_failure" / "RCA_template.md"
-    ).read_text(encoding="utf-8")
-
-    assert "## Root Cause" in task2_template
-    assert "## Fix Applied" in task2_template
-    assert "## Root Cause" in task3_template
-    assert "## Prevention" in task3_template

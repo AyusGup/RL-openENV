@@ -2,7 +2,7 @@
   "id": "task3_cascading_failure",
   "name": "Task 3: Cascading Timeout Failure",
   "difficulty": "hard",
-  "max_steps": 30,
+  "max_steps": 24,
   "alert_message": "CRITICAL: Service A is timing out while waiting for Service B, opening the circuit breaker and causing a cascading failure. Inspect both services, stabilize the request path, and write an RCA.md.",
   "alert_source": "prometheus-alertmanager",
   "severity": "CRITICAL",

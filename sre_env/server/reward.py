@@ -3,7 +3,7 @@
 from pathlib import PurePosixPath
 from typing import Iterable, Set
 
-from ..models import SREAction, SREObservation
+from sre_env.models import SREAction, SREObservation
 
 
 class SREStepRewarder:

@@ -2,17 +2,19 @@
 
 import os
 from pathlib import Path
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
 from typing import List, Optional
 
-from ..models import SREAction, SREObservation, SREState, SREStepResult, TaskSummary
-from .sre_environment import SREEnvironment
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+import uvicorn
+
+from sre_env.models import SREAction, SREObservation, SREState, SREStepResult, TaskSummary
+from sre_env.server.sre_environment import SREEnvironment
 
 # Configuration
-BASE_DIR = Path(os.getenv("OPENENV_REPO_ROOT", Path(__file__).parent.parent.parent))
-FIXTURES_DIR = BASE_DIR / "fixtures"
-WORKSPACE_ROOT = BASE_DIR / "workspace"
+PACKAGE_ROOT = Path(os.getenv("OPENENV_REPO_ROOT", Path(__file__).resolve().parents[1]))
+FIXTURES_DIR = Path(os.getenv("OPENENV_FIXTURES_DIR", PACKAGE_ROOT / "fixtures"))
+WORKSPACE_ROOT = Path(os.getenv("OPENENV_WORKSPACE_ROOT", PACKAGE_ROOT / "workspace"))
 
 app = FastAPI(title="SRE Incident Response OpenEnv")
 
@@ -58,5 +60,6 @@ async def get_state():
     return env.state
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=7860)
+   """Run the FastAPI app with Uvicorn."""
+
+   uvicorn.run(app, host="0.0.0.0", port=7860)

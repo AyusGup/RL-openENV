@@ -29,8 +29,10 @@ SUCCESS_SCORE_THRESHOLD = 0.1
 def task_requires_rca(task_name: str) -> bool:
     """Return whether the task requires an RCA.md before submission."""
     candidate_paths = [
+        Path(__file__).resolve().parent / "sre_env" / "fixtures" / task_name / "task_config.json",
         Path(__file__).resolve().parent / "fixtures" / task_name / "task_config.json",
         Path("fixtures") / task_name / "task_config.json",
+        Path("sre_env") / "fixtures" / task_name / "task_config.json",
     ]
     for config_path in candidate_paths:
         if not config_path.exists():

@@ -2,7 +2,7 @@
   "id": "task1_wrong_status",
   "name": "Task 1: FastAPI Status Code Mismatch",
   "difficulty": "easy",
-  "max_steps": 10,
+  "max_steps": 15,
   "alert_message": "CRITICAL: Monitoring alert triggered! The item creation API is violating its response contract after successful writes. Investigate the create flow and restore the expected behavior.",
   "alert_source": "prometheus-alertmanager",
   "severity": "HIGH",

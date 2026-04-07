@@ -7,7 +7,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from ..models import TaskSummary
+from sre_env.models import TaskSummary
 
 
 class RegexCheck(BaseModel):

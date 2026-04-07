@@ -11,7 +11,7 @@ from sre_env.server.sre_environment import SREEnvironment
 
 def build_client(tmp_path: Path) -> TestClient:
     """Create a test client backed by an isolated workspace."""
-    fixtures_dir = Path(__file__).resolve().parents[1] / "fixtures"
+    fixtures_dir = Path(__file__).resolve().parents[1] / "sre_env" / "fixtures"
     workspace_root = tmp_path / "workspace"
     app_module.env = SREEnvironment(fixtures_dir, workspace_root)
     return TestClient(app_module.app)
@@ -56,13 +56,13 @@ def test_tasks_endpoint_lists_all_tasks(tmp_path: Path) -> None:
     ]
 
 
-def test_health_endpoint_returns_ok(tmp_path: Path) -> None:
+def test_health_endpoint_returns_healthy(tmp_path: Path) -> None:
     client = build_client(tmp_path)
 
     response = client.get("/health")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    assert response.json() == {"status": "healthy"}
 
 
 def test_step_and_state_round_trip(tmp_path: Path) -> None:

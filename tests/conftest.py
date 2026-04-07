@@ -15,7 +15,9 @@ def tmp_path(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """Use pytest temp dirs when available, with a local fallback if needed."""
     if os.getenv("OPENENV_TEST_LOCAL_TMP") != "1":
         try:
-            return tmp_path_factory.mktemp("case")
+            path = tmp_path_factory.mktemp("case")
+            yield path
+            return
         except PermissionError:
             pass
 
