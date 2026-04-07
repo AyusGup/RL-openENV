@@ -41,6 +41,16 @@ State model:
 - `done`
 - `workspace_root`
 
+Python client (typed async):
+```python
+from sre_env import SREAction, SREEnv
+
+async with SREEnv("http://127.0.0.1:7860") as env:
+    observation = await env.reset(task_id="task2_retry_logic")
+    result = await env.step(SREAction(tool="terminal", command="cat app/retry_handler.py"))
+    state = await env.state()
+```
+
 ## Linux Setup
 From the repo root, create a virtual environment and install dependencies:
 ```bash
@@ -68,19 +78,12 @@ export OPENENV_BASE_URL="http://127.0.0.1:7860"
 export SRE_TASK_NAME="task1_wrong_status"
 export API_BASE_URL="https://router.huggingface.co/v1"
 export MODEL_NAME="Qwen/Qwen2.5-72B-Instruct"
-export OPENAI_API_KEY="hf_your_token_here"
+export HF_TOKEN="hf_your_token_here"
 python inference.py
 ```
 
 The inference client uses the OpenAI-compatible model endpoint to choose the next environment action step by step and emits the required `[START]`, `[STEP]`, and `[END]` logs.
-
-To generate a baseline across all three tasks with one command:
-```bash
-source .venv/bin/activate
-baseline-all
-```
-
-The batch runner prints a summary table with per-task `success`, `steps`, `score`, and an `average_score`.
+By default, `inference.py` runs `task1_wrong_status`. Set `SRE_TASK_NAME` to a specific task id to run a different task.
 
 You can load values from `.env.example` using your preferred dotenv workflow. Do not commit real secrets.
 
@@ -88,9 +91,9 @@ You can load values from `.env.example` using your preferred dotenv workflow. Do
 For Hugging Face Spaces, add these in your Space settings:
 - `API_BASE_URL`
 - `MODEL_NAME`
-- `OPENAI_API_KEY`
+- `HF_TOKEN`
 
-Put `OPENAI_API_KEY` in Space Secrets, not plain Variables.
+Put `HF_TOKEN` in Space Secrets, not plain Variables.
 
 To create a token:
 1. Sign in to Hugging Face.

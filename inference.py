@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
+import sys
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import httpx
-from openai import OpenAI
+from openai import AsyncOpenAI
 
 API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
 MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
-API_KEY = os.getenv("OPENAI_API_KEY")
+API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
 ENV_BASE_URL = os.getenv("OPENENV_BASE_URL") or "http://127.0.0.1:7860"
 TASK_NAME = os.getenv("SRE_TASK_NAME") or "task1_wrong_status"
 BENCHMARK = os.getenv("SRE_BENCHMARK") or "sre_env"
@@ -21,6 +24,7 @@ DEFAULT_MAX_STEPS = 8
 SUCCESS_SCORE_THRESHOLD = 0.1
 
 
+@lru_cache(maxsize=16)
 def task_requires_rca(task_name: str) -> bool:
     """Return whether the task requires an RCA.md before submission."""
     candidate_paths = [
@@ -89,7 +93,7 @@ def log_start(task: str, env: str, model: str) -> None:
 
 
 def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
-    error_val = sanitize_log_value(error) if error else "null"
+    error_val = error if error else "null"
     done_val = str(done).lower()
     print(
         f"[STEP] step={step} action={sanitize_log_value(action)} reward={reward:.2f} done={done_val} error={error_val}",
@@ -107,7 +111,7 @@ def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> No
 
 def log_error(stage: str, error: str) -> None:
     """Emit a compact single-line error log."""
-    print(f"[ERROR] stage={stage} error={sanitize_log_value(error)}", flush=True)
+    print(f"[ERROR] stage={stage} error={sanitize_log_value(error)}", flush=True, file=sys.stderr)
 
 
 def sanitize_log_value(value: str) -> str:
@@ -205,8 +209,8 @@ def build_action_prompt(
     )
 
 
-def choose_next_action(
-    client: OpenAI,
+async def choose_next_action(
+    client: AsyncOpenAI,
     alert_message: str,
     file_tree: List[str],
     history: List[Dict[str, str]],
@@ -233,7 +237,7 @@ def choose_next_action(
         "Guidance: Avoid duplicate cat reads on unchanged files. "
         "If replay already succeeded and RCA.md exists, choose submit now.\n"
     )
-    completion = client.chat.completions.create(
+    completion = await client.chat.completions.create(
         model=MODEL_NAME,
         messages=[
             {"role": "system", "content": ACTION_SYSTEM_PROMPT},
@@ -247,8 +251,8 @@ def choose_next_action(
     return normalize_action(extract_json_object(content))
 
 
-def build_editor_content(
-    client: OpenAI,
+async def build_editor_content(
+    client: AsyncOpenAI,
     file_path: str,
     current_source: str,
     alert_message: str,
@@ -268,7 +272,7 @@ def build_editor_content(
         log_sections.append(f"{log_name}:\n{truncate_text(log_content, limit=2000)}")
     logs_block = "\n\n".join(log_sections) if log_sections else "None"
 
-    completion = client.chat.completions.create(
+    completion = await client.chat.completions.create(
         model=MODEL_NAME,
         messages=[
             {"role": "system", "content": EDITOR_SYSTEM_PROMPT},
@@ -294,16 +298,16 @@ def build_editor_content(
     return candidate
 
 
-def post_json(http_client: httpx.Client, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+async def post_json(http_client: httpx.AsyncClient, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     """POST JSON and return the parsed response payload."""
-    response = http_client.post(path, json=payload, timeout=60.0)
+    response = await http_client.post(path, json=payload, timeout=60.0)
     response.raise_for_status()
     return response.json()
 
 
-def get_json(http_client: httpx.Client, path: str) -> Dict[str, Any]:
+async def get_json(http_client: httpx.AsyncClient, path: str) -> Dict[str, Any]:
     """GET JSON and return the parsed response payload."""
-    response = http_client.get(path, timeout=60.0)
+    response = await http_client.get(path, timeout=60.0)
     response.raise_for_status()
     return response.json()
 
@@ -323,17 +327,6 @@ def extract_http_error_detail(exc: httpx.HTTPStatusError) -> str:
     return text or str(exc)
 
 
-def history_contains_editor_write(history: List[Dict[str, str]], file_suffix: str = "") -> bool:
-    """Return whether the agent has already written a file."""
-    for item in history:
-        action = item.get("action", "")
-        if not action.startswith("write("):
-            continue
-        if not file_suffix or action.endswith(f"{file_suffix})"):
-            return True
-    return False
-
-
 def history_has_code_edit(history: List[Dict[str, str]]) -> bool:
     """Return whether the agent already edited a likely source file."""
     return any(
@@ -351,73 +344,6 @@ def history_has_successful_replay(history: List[Dict[str, str]]) -> bool:
         if action.startswith("replay(") and "contract_ok=true" in stdout:
             return True
     return False
-
-
-def build_rca_content(
-    task_name: str,
-    alert_message: str,
-    template: str,
-) -> str:
-    """Create a deterministic RCA document for tasks that require one."""
-    if task_name == "task2_retry_logic":
-        root_cause = (
-            "The retry helper used `range(max_retries)` which limited execution to the "
-            "initial attempt plus only two retries when the system expected three retries "
-            "after the first failure. The upstream recovered on the fourth attempt, but the "
-            "service stopped early and raised MaxRetriesExceeded."
-        )
-        affected_services = (
-            "The retry handler behind `/api/upstream/health` was directly impacted, and the "
-            "monitoring path saw false 503 failures because the final recovery attempt never ran."
-        )
-        fix_applied = (
-            "Updated `app/retry_handler.py` so the loop performs the initial request plus the "
-            "configured retry count by iterating over `range(max_retries + 1)`. This restores "
-            "the expected fourth attempt and aligns the implementation with the incident logs "
-            "and regression tests."
-        )
-        prevention = (
-            "Keep the regression test that proves success on the last allowed retry, alert on "
-            "retry exhaustion patterns separately from true upstream outages, and require the "
-            "RCA checklist for future retry-path incidents."
-        )
-    elif task_name == "task3_cascading_failure":
-        root_cause = (
-            "service_a was configured with a 100ms client timeout while service_b needed "
-            "roughly 200-300ms to finish its enrichment query under load. service_a timed out "
-            "first, counted the calls as failures, and opened the circuit breaker even though "
-            "service_b was still completing requests successfully."
-        )
-        affected_services = (
-            "Both service_a and service_b were affected. service_a generated the timeout and "
-            "circuit-breaker alerts, while service_b kept doing useful work that the client no "
-            "longer waited for."
-        )
-        fix_applied = (
-            "Raised the timeout budget in `service_a/main.py` to match the real latency profile "
-            "and improved the slower data path in `service_b/database.py` so the enrichment work "
-            "fits within the new budget with better headroom."
-        )
-        prevention = (
-            "Track cross-service latency budgets in code reviews, alert when downstream p95 "
-            "approaches the caller timeout, and keep integration tests that fail if service_a "
-            "and service_b drift out of budget again."
-        )
-    else:
-        root_cause = alert_message or "The incident was caused by a mismatch between the implementation and the expected production behavior."
-        affected_services = "The service under investigation and its immediate callers were impacted by the incident."
-        fix_applied = "Applied the code change required to align the implementation with the expected behavior and verified the fix with the available tests."
-        prevention = "Keep regression tests for the incident pattern and document the operational checklist for similar alerts."
-
-    _ = template
-    header = "# Incident RCA Report"
-    return (
-        f"{header}\n\n"
-        f"## Root Cause\n{root_cause}\n\n"
-        f"## Affected Services\n{affected_services}\n\n"
-        f"## Fix Applied\n{fix_applied}\n\n"
-        f"## Prevention\n{prevention}\n"
-    )
 
 
 def choose_forced_action(
@@ -453,7 +379,7 @@ def choose_forced_action(
             "tool": "editor",
             "command": "",
             "file_path": "RCA.md",
-            "file_content": build_rca_content(task_name, alert_message, ""),
+            "file_content": "",
         }
 
     return None
@@ -481,7 +407,7 @@ def maybe_capture_file_contents(
         known_files[target] = stdout
 
 
-def main() -> None:
+async def main() -> None:
     rewards: List[float] = []
     score = 0.0
     success = False
@@ -497,12 +423,12 @@ def main() -> None:
 
     try:
         if not API_KEY:
-            raise RuntimeError("OPENAI_API_KEY is required for submission inference runs.")
-        llm_client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+            raise RuntimeError("HF_TOKEN is required for submission inference runs.")
+        llm_client = AsyncOpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
-        with httpx.Client(base_url=ENV_BASE_URL, follow_redirects=True) as env_client:
-            initial_observation = post_json(env_client, "/reset", {"task_id": TASK_NAME})
-            state = get_json(env_client, "/state")
+        async with httpx.AsyncClient(base_url=ENV_BASE_URL, follow_redirects=True) as env_client:
+            initial_observation = await post_json(env_client, "/reset", {"task_id": TASK_NAME})
+            state = await get_json(env_client, "/state")
             if isinstance(state, dict):
                 max_steps = int(state.get("max_steps") or DEFAULT_MAX_STEPS)
             alert_message = str(initial_observation.get("alert_message") or "")
@@ -530,7 +456,7 @@ def main() -> None:
                         max_steps=max_steps,
                     )
                     if action is None:
-                        action = choose_next_action(
+                        action = await choose_next_action(
                             client=llm_client,
                             alert_message=alert_message,
                             file_tree=file_tree,
@@ -548,13 +474,20 @@ def main() -> None:
                             "tool": "editor",
                             "command": "",
                             "file_path": "RCA.md",
-                            "file_content": build_rca_content(TASK_NAME, alert_message, ""),
+                            "file_content": "",
                         }
 
                     if action["tool"] == "editor":
                         current_source = known_files.get(action["file_path"])
-                        if action["file_path"] == "RCA.md" and action["file_content"]:
-                            pass
+                        if action["file_path"] == "RCA.md":
+                            action["file_content"] = await build_editor_content(
+                                client=llm_client,
+                                file_path=action["file_path"],
+                                current_source=current_source or "",
+                                alert_message=alert_message,
+                                known_logs=known_logs,
+                                history=history,
+                            )
                         elif current_source is None:
                             action = {
                                 "tool": "terminal",
@@ -563,7 +496,7 @@ def main() -> None:
                                 "file_content": "",
                             }
                         else:
-                            action["file_content"] = build_editor_content(
+                            action["file_content"] = await build_editor_content(
                                 client=llm_client,
                                 file_path=action["file_path"],
                                 current_source=current_source,
@@ -572,7 +505,7 @@ def main() -> None:
                                 history=history,
                             )
 
-                    latest_step_result = post_json(env_client, "/step", action)
+                    latest_step_result = await post_json(env_client, "/step", action)
                     reward = float(latest_step_result["reward"]["value"] or 0.0)
                     rewards.append(reward)
                     steps_taken = step
@@ -642,7 +575,7 @@ def main() -> None:
 
             if not latest_step_result.get("done") and not abort_episode:
                 submit_action = {"tool": "submit", "command": "", "file_path": "", "file_content": ""}
-                latest_step_result = post_json(env_client, "/step", submit_action)
+                latest_step_result = await post_json(env_client, "/step", submit_action)
                 reward = float(latest_step_result["reward"]["value"] or 0.0)
                 rewards.append(reward)
                 steps_taken += 1
@@ -676,4 +609,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

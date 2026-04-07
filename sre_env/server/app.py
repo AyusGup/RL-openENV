@@ -29,7 +29,7 @@ async def root():
 @app.get("/health")
 async def health():
     """Container health probe endpoint."""
-    return {"status": "ok"}
+    return {"status": "healthy"}
 
 @app.get("/tasks", response_model=List[TaskSummary])
 async def list_tasks():
