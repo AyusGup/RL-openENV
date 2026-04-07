@@ -1,7 +1,9 @@
 """Deterministic grading for SRE incident response tasks."""
 
+import asyncio
 import os
 import re
+import subprocess
 from pathlib import Path
 from typing import List
 
@@ -37,7 +39,7 @@ class SREGrader:
         total_score += file_change_score * weights.get("file_change", 0.0)
 
         # 2. Test Success Scoring (Run pytest)
-        test_score = await self._check_tests(workspace_path)
+        test_score = await self._check_tests(task_config.id, fixture_path, workspace_path)
         total_score += test_score * weights.get("tests_pass", 0.0)
 
         # 3. Correctness Scoring (Regex match in source code)
@@ -74,8 +76,11 @@ class SREGrader:
 
         return modified_count / len(expected_files)
 
-    async def _check_tests(self, workspace_path: Path) -> float:
+    async def _check_tests(self, task_id: str, fixture_path: Path, workspace_path: Path) -> float:
         """Run pytest in the workspace."""
+        if task_id == "task1_wrong_status":
+            return await self._check_task1_hidden_tests(fixture_path, workspace_path)
+
         test_command = "py -3 -m pytest -q" if os.name == "nt" else "python -m pytest -q"
         stdout, stderr, exit_code = await self.executor.execute(
             test_command, workspace_path, timeout=30
@@ -83,6 +88,36 @@ class SREGrader:
 
         # 1.0 if exit code 0 (all pass), 0.0 otherwise
         return 1.0 if exit_code == 0 else 0.0
+
+    async def _check_task1_hidden_tests(self, fixture_path: Path, workspace_path: Path) -> float:
+        """Run task-1 tests from fixture path so tests are hidden from the agent workspace."""
+        tests_root = fixture_path / "tests"
+        if not tests_root.exists():
+            return 0.0
+
+        python_executable = "py" if os.name == "nt" else "python"
+        env = os.environ.copy()
+        existing_pythonpath = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = (
+            str(workspace_path)
+            if not existing_pythonpath
+            else str(workspace_path) + os.pathsep + existing_pythonpath
+        )
+
+        try:
+            completed = await asyncio.to_thread(
+                subprocess.run,
+                [python_executable, "-m", "pytest", "-q", str(tests_root)],
+                cwd=str(workspace_path),
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except Exception:
+            return 0.0
+
+        return 1.0 if completed.returncode == 0 else 0.0
 
     def _check_regex(self, checks: List[RegexCheck], workspace_path: Path) -> float:
         """Verify the logic of the fix using regex."""

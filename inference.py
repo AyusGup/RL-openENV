@@ -25,22 +25,26 @@ You are controlling an SRE incident-response environment.
 At every turn, choose exactly one next action to execute. Available tools:
 - terminal: run one shell command in the task workspace
 - editor: write the full replacement contents of one file
+- replay: run a deterministic replay probe against the current workspace code
 - submit: finish and trigger grading
 
 Return exactly one JSON object and nothing else with these keys:
-{"tool":"terminal|editor|submit","command":"","file_path":"","file_content":""}
+{"tool":"terminal|editor|replay|submit","command":"","file_path":"","file_content":""}
 
 Rules:
 - Output valid JSON only. No markdown fences.
-- Use terminal commands to inspect logs, inspect source, and run tests.
+- Use terminal commands to inspect logs and inspect source.
 - Use editor only after you have inspected the target file.
 - For editor actions, set file_path and leave file_content empty. The client will request the full file contents separately.
 - For terminal actions, set command and leave file_path/file_content empty.
+- For replay, set command to the replay name (task1: create_item_contract).
 - For submit, leave command/file_path/file_content empty.
-- Prefer short deterministic commands like: cat logs/error.log, cat app/main.py, python -m pytest -q.
+- Prefer short deterministic commands like: cat logs/error.log, cat app/main.py, ls .
 - Avoid repeating the same read command unless you expect genuinely new information.
+- Do not repeat `cat` on the same file unless that file was edited since your last read.
 - Treat RCA.md as a final incident document: investigate first, fix and verify the code, then complete the RCA near the end.
-- If the workspace contains RCA_template.md, create RCA.md before you submit.
+- Create RCA.md before submit with headings: Root Cause, Affected Services, Fix Applied, Prevention.
+- After replay confirms success and RCA.md exists, submit immediately.
 - Keep RCA language concise, factual, and non-speculative.
 - Submit once the fix is verified or when more probing is unlikely to help.
 """.strip()
@@ -90,6 +94,8 @@ def sanitize_action_for_log(action: Dict[str, Any]) -> str:
         return str(action.get("command") or "")
     if action["tool"] == "editor":
         return f"write({action.get('file_path') or ''})"
+    if action["tool"] == "replay":
+        return f"replay({action.get('command') or ''})"
     return "submit"
 
 
@@ -124,7 +130,7 @@ def extract_json_object(content: str) -> Dict[str, Any]:
 def normalize_action(raw_action: Dict[str, Any]) -> Dict[str, str]:
     """Validate and normalize the model action payload."""
     tool = str(raw_action.get("tool") or "").strip().lower()
-    if tool not in {"terminal", "editor", "submit"}:
+    if tool not in {"terminal", "editor", "replay", "submit"}:
         raise RuntimeError(f"Unsupported tool from model: {tool or 'empty'}")
 
     action = {
@@ -136,6 +142,8 @@ def normalize_action(raw_action: Dict[str, Any]) -> Dict[str, str]:
 
     if tool == "terminal" and not action["command"]:
         raise RuntimeError("Model returned terminal action without command.")
+    if tool == "replay" and not action["command"]:
+        raise RuntimeError("Model returned replay action without command.")
     if tool == "editor" and not action["file_path"]:
         raise RuntimeError("Model returned editor action without file_path.")
     return action
@@ -185,11 +193,17 @@ def choose_next_action(
         history=history,
         latest_observation=latest_step_result["observation"],
     )
+    has_rca = "RCA.md" in file_tree
+    replay_succeeded = history_has_successful_replay(history)
     prompt += (
         f"\nStep reward: {float(latest_step_result['reward']['value']):.2f}\n"
         f"Step done: {str(bool(latest_step_result['done'])).lower()}\n"
         f"Step info score: {step_score_display}\n"
         f"Step last_action_error: {latest_step_result['info'].get('last_action_error') or 'null'}\n"
+        f"Has RCA.md: {str(has_rca).lower()}\n"
+        f"Replay already succeeded: {str(replay_succeeded).lower()}\n"
+        "Guidance: Avoid duplicate cat reads on unchanged files. "
+        "If replay already succeeded and RCA.md exists, choose submit now.\n"
     )
     completion = client.chat.completions.create(
         model=MODEL_NAME,
@@ -277,11 +291,6 @@ def history_contains_editor_write(history: List[Dict[str, str]], file_suffix: st
     return False
 
 
-def history_contains_terminal_fragment(history: List[Dict[str, str]], fragment: str) -> bool:
-    """Return whether a terminal command fragment already appeared in history."""
-    return any(fragment in item.get("action", "") for item in history)
-
-
 def history_has_code_edit(history: List[Dict[str, str]]) -> bool:
     """Return whether the agent already edited a likely source file."""
     return any(
@@ -291,12 +300,12 @@ def history_has_code_edit(history: List[Dict[str, str]]) -> bool:
     )
 
 
-def history_has_passing_pytest(history: List[Dict[str, str]]) -> bool:
-    """Return whether a pytest command already passed."""
+def history_has_successful_replay(history: List[Dict[str, str]]) -> bool:
+    """Return whether a replay action already reported a successful contract."""
     for item in history:
         action = item.get("action", "")
         stdout = item.get("stdout", "").lower()
-        if "pytest" in action and "passed" in stdout and "failed" not in stdout:
+        if action.startswith("replay(") and "contract_ok=true" in stdout:
             return True
     return False
 
@@ -378,35 +387,26 @@ def choose_forced_action(
     max_steps: int,
 ) -> Optional[Dict[str, str]]:
     """Inject a small amount of task-aware structure into the baseline."""
-    has_template = "RCA_template.md" in file_tree
     has_rca = "RCA.md" in file_tree or "RCA.md" in known_files
-    if not has_template or has_rca:
+    if has_rca:
         return None
 
     remaining_actions = max_steps - step_number + 1
-    template = known_files.get("RCA_template.md", "")
     last_error = str(latest_step_result["info"].get("last_action_error") or "")
     has_code_progress = history_has_code_edit(history)
-    has_test_run = history_contains_terminal_fragment(history, "pytest")
-    has_passing_tests = history_has_passing_pytest(history)
-    ready_for_rca = has_code_progress and (has_passing_tests or remaining_actions <= 2)
+    has_replay_success = history_has_successful_replay(history)
+    ready_for_rca = has_code_progress and (has_replay_success or remaining_actions <= 2)
 
-    if not template and has_code_progress and has_test_run and remaining_actions <= 4:
-        return {
-            "tool": "terminal",
-            "command": "cat RCA_template.md",
-            "file_path": "",
-            "file_content": "",
-        }
-
-    if template and (
-        ready_for_rca or ("RCA.md" in last_error and has_code_progress) or remaining_actions <= 2
+    if (
+        ready_for_rca
+        or ("RCA.md" in last_error and has_code_progress)
+        or (remaining_actions <= 2 and has_code_progress)
     ):
         return {
             "tool": "editor",
             "command": "",
             "file_path": "RCA.md",
-            "file_content": build_rca_content(task_name, alert_message, template),
+            "file_content": build_rca_content(task_name, alert_message, ""),
         }
 
     return None
@@ -489,6 +489,18 @@ def main() -> None:
                             history=history,
                             latest_step_result=latest_step_result,
                         )
+
+                    if (
+                        action["tool"] == "submit"
+                        and "RCA.md" not in file_tree
+                        and "RCA.md" not in known_files
+                    ):
+                        action = {
+                            "tool": "editor",
+                            "command": "",
+                            "file_path": "RCA.md",
+                            "file_content": build_rca_content(TASK_NAME, alert_message, ""),
+                        }
 
                     if action["tool"] == "editor":
                         current_source = known_files.get(action["file_path"])

@@ -2,10 +2,14 @@
 
 import shutil
 from pathlib import Path
-from typing import Any, Dict
+from typing import Iterable
 
 
-def setup_workspace(fixture_path: Path, workspace_path: Path) -> bool:
+def setup_workspace(
+    fixture_path: Path,
+    workspace_path: Path,
+    extra_ignore_patterns: Iterable[str] | None = None,
+) -> bool:
     """Prepare a fresh workspace from a task fixture.
 
     Args:
@@ -25,10 +29,14 @@ def setup_workspace(fixture_path: Path, workspace_path: Path) -> bool:
         
         # 3. Copy fixture contents (minus config files)
         # We don't want the agent seeing the task_config.json!
+        ignore_patterns = ["task_config.json", "*.pyc", "__pycache__"]
+        if extra_ignore_patterns:
+            ignore_patterns.extend(extra_ignore_patterns)
+
         shutil.copytree(
-            fixture_path, 
-            workspace_path, 
-            ignore=shutil.ignore_patterns("task_config.json", "*.pyc", "__pycache__")
+            fixture_path,
+            workspace_path,
+            ignore=shutil.ignore_patterns(*ignore_patterns),
         )
         return True
     except (IOError, OSError) as e:

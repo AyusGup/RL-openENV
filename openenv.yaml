@@ -11,11 +11,11 @@ action_space:
   fields:
     tool:
       type: "string"
-      enum: ["terminal", "editor", "submit"]
+      enum: ["terminal", "editor", "replay", "submit"]
       description: "The tool to use."
     command:
       type: "string"
-      description: "Shell command to run in terminal tool mode."
+      description: "Shell command for terminal mode, or replay name for replay mode."
     file_path:
       type: "string"
       description: "Path of the file to edit (relative to workspace root)."

@@ -11,6 +11,7 @@ from ..providers.static_alert import StaticAlertProvider
 from ..tasks.registry import TaskRegistry
 from ..utils.file_ops import get_file_tree, setup_workspace
 from .grader import SREGrader
+from .replay import ReplayExecutor
 from .reward import SREStepRewarder
 
 
@@ -34,6 +35,7 @@ class SREEnvironment:
         self.executor = SandboxExecutor()
         self.alert_provider = StaticAlertProvider(fixtures_dir)
         self.grader = SREGrader(self.executor)
+        self.replay_executor = ReplayExecutor()
         self.rewarder = SREStepRewarder()
         
         # Track active state
@@ -59,7 +61,12 @@ class SREEnvironment:
 
         # Prepare clear workspace
         fixture_path = self.fixtures_dir / resolved_task_id
-        if not setup_workspace(fixture_path, self.workspace_root):
+        extra_ignores = ("tests",) if resolved_task_id == "task1_wrong_status" else ()
+        if not setup_workspace(
+            fixture_path,
+            self.workspace_root,
+            extra_ignore_patterns=extra_ignores,
+        ):
             return SREObservation(stderr="Error: Could not setup workspace.")
 
         # Start fresh state
@@ -144,6 +151,29 @@ class SREEnvironment:
             except Exception as e:
                 observation.stderr = f"FAIL: Error writing file: {str(e)}"
                 last_action_error = observation.stderr
+
+        elif action.tool == "replay":
+            replay_name = action.command.strip()
+            if not replay_name:
+                observation.stderr = "Error: Replay action requires command=<replay_name>."
+                last_action_error = observation.stderr
+            else:
+                try:
+                    replay_result = self.replay_executor.run(
+                        task_id=self.state.task_id,
+                        replay_name=replay_name,
+                        workspace_root=self.workspace_root,
+                    )
+                    observation.stdout = replay_result.evidence_log
+                    observation.exit_code = 0 if replay_result.success else 1
+                    info_message = (
+                        f"Replay '{replay_result.replay_name}' "
+                        f"completed with status={replay_result.status_code} "
+                        f"success={str(replay_result.success).lower()}."
+                    )
+                except Exception as e:
+                    observation.stderr = f"Error: {str(e)}"
+                    last_action_error = observation.stderr
 
         elif action.tool == "submit":
             # Signalling end of episode

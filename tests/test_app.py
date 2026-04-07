@@ -26,6 +26,7 @@ def test_reset_defaults_to_single_task(tmp_path: Path) -> None:
     body = response.json()
     assert body["alert_message"]
     assert "app/main.py" in body["file_tree"]
+    assert not any(path.startswith("tests/") for path in body["file_tree"])
     state = client.get("/state").json()
     assert state["max_steps"] == 8
 
@@ -79,6 +80,30 @@ def test_step_and_state_round_trip(tmp_path: Path) -> None:
     assert state_response.status_code == 200
     assert state_response.json()["task_id"] == "task1_wrong_status"
     assert state_response.json()["step_count"] == 1
+
+
+def test_task1_replay_runs_against_workspace_app(tmp_path: Path) -> None:
+    client = build_client(tmp_path)
+    client.post("/reset", json={"task_id": "task1_wrong_status"})
+
+    response = client.post("/step", json={"tool": "replay", "command": "create_item_contract"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "replay=create_item_contract" in body["observation"]["stdout"]
+    assert "observed_status=200" in body["observation"]["stdout"]
+    assert body["reward"]["value"] > 0.0
+    assert body["done"] is False
+
+
+def test_replay_is_rejected_for_non_task1(tmp_path: Path) -> None:
+    client = build_client(tmp_path)
+    client.post("/reset", json={"task_id": "task2_retry_logic"})
+
+    response = client.post("/step", json={"tool": "replay", "command": "create_item_contract"})
+
+    assert response.status_code == 400
+    assert "Replay is not supported for task 'task2_retry_logic'" in response.json()["detail"]
 
 
 def test_submit_returns_normalized_score(tmp_path: Path) -> None:

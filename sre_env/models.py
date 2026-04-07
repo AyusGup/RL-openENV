@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 class SREAction(BaseModel):
     """An action the agent can take."""
 
-    tool: Literal["terminal", "editor", "submit"]
+    tool: Literal["terminal", "editor", "replay", "submit"]
     command: str = ""
     file_path: str = ""
     file_content: str = ""

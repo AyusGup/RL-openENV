@@ -13,9 +13,10 @@ class SREStepRewarder:
         self.initial_files: Set[str] = set()
         self.seen_logs: Set[str] = set()
         self.seen_source: Set[str] = set()
-        self.seen_commands: Set[str] = set()
         self.seen_test_runs: Set[str] = set()
         self.rewarded_edits: Set[str] = set()
+        self.seen_replays: Set[str] = set()
+        self.last_cat_stdout_by_target: dict[str, str] = {}
 
     def calculate_reward(
         self,
@@ -35,11 +36,6 @@ class SREStepRewarder:
             cmd = action.command.lower()
             normalized_cmd = " ".join(cmd.split())
 
-            if normalized_cmd in self.seen_commands:
-                reward -= 0.02
-            else:
-                self.seen_commands.add(normalized_cmd)
-
             if any(
                 blocked in normalized_cmd
                 for blocked in ("rm -rf", "shutdown", "reboot", "mkfs", "dd ", "sudo ", "killall")
@@ -48,6 +44,10 @@ class SREStepRewarder:
 
             if observation.exit_code == 0 and cmd.startswith("cat "):
                 target = cmd.split("cat ", maxsplit=1)[-1].strip().replace("\\", "/")
+                previous_stdout = self.last_cat_stdout_by_target.get(target)
+                if previous_stdout is not None and previous_stdout == observation.stdout:
+                    reward -= 0.02
+                self.last_cat_stdout_by_target[target] = observation.stdout
                 if target.startswith("logs/") and target.endswith(".log") and target not in self.seen_logs:
                     reward += 0.05
                     self.seen_logs.add(target)
@@ -74,6 +74,19 @@ class SREStepRewarder:
                 else:
                     reward += 0.03
                 self.rewarded_edits.add(normalized_path)
+            # Allow an immediate validation read after edits by clearing stale read memory.
+            self.last_cat_stdout_by_target.pop(normalized_path, None)
+
+        elif action.tool == "replay":
+            replay_name = " ".join(action.command.lower().split())
+            if replay_name:
+                if replay_name in self.seen_replays:
+                    reward -= 0.01
+                else:
+                    reward += 0.02
+                    self.seen_replays.add(replay_name)
+            if "contract_ok=true" in observation.stdout.lower():
+                reward += 0.01
 
         elif action.tool == "submit":
             return 0.0
