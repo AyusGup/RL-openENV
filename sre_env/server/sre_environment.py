@@ -61,11 +61,7 @@ class SREEnvironment:
 
         # Prepare clear workspace
         fixture_path = self.fixtures_dir / resolved_task_id
-        extra_ignores: tuple[str, ...] = ()
-        if resolved_task_id == "task1_wrong_status":
-            extra_ignores = ("tests",)
-        elif resolved_task_id in {"task2_retry_logic", "task3_cascading_failure"}:
-            extra_ignores = ("tests", "RCA_template.md")
+        extra_ignores = ("tests",)
 
         if not setup_workspace(
             fixture_path,

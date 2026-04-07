@@ -179,8 +179,6 @@ def test_reset_can_target_task2(tmp_path: Path) -> None:
     assert response.status_code == 200
     body = response.json()
     assert "app/retry_handler.py" in body["file_tree"]
-    assert "RCA.md" not in body["file_tree"]
-    assert "RCA_template.md" not in body["file_tree"]
     assert not any(path.startswith("tests/") for path in body["file_tree"])
     state = client.get("/state").json()
     assert state["max_steps"] == 16
@@ -195,7 +193,6 @@ def test_reset_can_target_task3(tmp_path: Path) -> None:
     body = response.json()
     assert "service_a/main.py" in body["file_tree"]
     assert "service_b/database.py" in body["file_tree"]
-    assert "RCA_template.md" not in body["file_tree"]
     assert not any(path.startswith("tests/") for path in body["file_tree"])
     state = client.get("/state").json()
     assert state["max_steps"] == 24
