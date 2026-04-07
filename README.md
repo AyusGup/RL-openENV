@@ -74,6 +74,14 @@ python inference.py
 
 The inference client uses the OpenAI-compatible model endpoint to choose the next environment action step by step and emits the required `[START]`, `[STEP]`, and `[END]` logs.
 
+To generate a baseline across all three tasks with one command:
+```bash
+source .venv/bin/activate
+baseline-all
+```
+
+The batch runner prints a summary table with per-task `success`, `steps`, `score`, and an `average_score`.
+
 You can load values from `.env.example` using your preferred dotenv workflow. Do not commit real secrets.
 
 ## Hugging Face Secrets
