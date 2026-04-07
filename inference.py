@@ -308,6 +308,21 @@ def get_json(http_client: httpx.Client, path: str) -> Dict[str, Any]:
     return response.json()
 
 
+def extract_http_error_detail(exc: httpx.HTTPStatusError) -> str:
+    """Return a concise error detail for non-2xx HTTP responses."""
+    response = exc.response
+    if response is None:
+        return str(exc)
+    try:
+        payload = response.json()
+        if isinstance(payload, dict) and payload.get("detail"):
+            return str(payload["detail"])
+    except Exception:
+        pass
+    text = (response.text or "").strip()
+    return text or str(exc)
+
+
 def history_contains_editor_write(history: List[Dict[str, str]], file_suffix: str = "") -> bool:
     """Return whether the agent has already written a file."""
     for item in history:
@@ -476,6 +491,7 @@ def main() -> None:
     known_files: Dict[str, str] = {}
     known_logs: Dict[str, str] = {}
     max_steps = DEFAULT_MAX_STEPS
+    abort_episode = False
 
     log_start(task=TASK_NAME, env=BENCHMARK, model=MODEL_NAME)
 
@@ -588,26 +604,43 @@ def main() -> None:
                         }
                     )
                 except Exception as exc:
+                    if isinstance(exc, httpx.HTTPStatusError):
+                        detail = extract_http_error_detail(exc)
+                        log_error("step_http", f"{exc}; detail={detail}")
+                        steps_taken = step
+                        latest_step_result = {
+                            "observation": {
+                                "stdout": "",
+                                "stderr": detail,
+                                "exit_code": 1,
+                                "file_tree": file_tree,
+                                "alert_message": "",
+                            },
+                            "reward": {"value": 0.0},
+                            "done": False,
+                            "info": {
+                                "score": None,
+                                "message": "Step rejected by environment; continuing episode.",
+                                "last_action_error": detail,
+                            },
+                        }
+                        history.append(
+                            {
+                                "action": sanitize_log_value(sanitize_action_for_log(action)),
+                                "reward": "0.00",
+                                "done": "false",
+                                "error": sanitize_log_value(detail),
+                                "stdout": "null",
+                                "stderr": sanitize_log_value(detail),
+                            }
+                        )
+                        continue
+
                     log_error("step", str(exc))
-                    if not latest_step_result.get("done"):
-                        try:
-                            submit_action = {"tool": "submit", "command": "", "file_path": "", "file_content": ""}
-                            latest_step_result = post_json(env_client, "/step", submit_action)
-                            reward = float(latest_step_result["reward"]["value"] or 0.0)
-                            rewards.append(reward)
-                            steps_taken = step
-                            log_step(
-                                step=step,
-                                action=sanitize_action_for_log(submit_action),
-                                reward=reward,
-                                done=bool(latest_step_result.get("done")),
-                                error=latest_step_result["info"].get("last_action_error") or None,
-                            )
-                        except Exception as submit_exc:
-                            log_error("submit_after_error", str(submit_exc))
+                    abort_episode = True
                     break
 
-            if not latest_step_result.get("done"):
+            if not latest_step_result.get("done") and not abort_episode:
                 submit_action = {"tool": "submit", "command": "", "file_path": "", "file_content": ""}
                 latest_step_result = post_json(env_client, "/step", submit_action)
                 reward = float(latest_step_result["reward"]["value"] or 0.0)
