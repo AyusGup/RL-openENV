@@ -12,7 +12,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import httpx
-from openai import AsyncOpenAI
+from openai import OpenAI
+from sre_env import SREAction, SREEnv
 
 API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
 MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
@@ -210,7 +211,7 @@ def build_action_prompt(
 
 
 async def choose_next_action(
-    client: AsyncOpenAI,
+    client: OpenAI,
     alert_message: str,
     file_tree: List[str],
     history: List[Dict[str, str]],
@@ -237,7 +238,7 @@ async def choose_next_action(
         "Guidance: Avoid duplicate cat reads on unchanged files. "
         "If replay already succeeded and RCA.md exists, choose submit now.\n"
     )
-    completion = await client.chat.completions.create(
+    completion = client.chat.completions.create(
         model=MODEL_NAME,
         messages=[
             {"role": "system", "content": ACTION_SYSTEM_PROMPT},
@@ -252,7 +253,7 @@ async def choose_next_action(
 
 
 async def build_editor_content(
-    client: AsyncOpenAI,
+    client: OpenAI,
     file_path: str,
     current_source: str,
     alert_message: str,
@@ -272,7 +273,7 @@ async def build_editor_content(
         log_sections.append(f"{log_name}:\n{truncate_text(log_content, limit=2000)}")
     logs_block = "\n\n".join(log_sections) if log_sections else "None"
 
-    completion = await client.chat.completions.create(
+    completion = client.chat.completions.create(
         model=MODEL_NAME,
         messages=[
             {"role": "system", "content": EDITOR_SYSTEM_PROMPT},
@@ -296,20 +297,6 @@ async def build_editor_content(
     if not candidate:
         raise RuntimeError("Model returned empty editor content.")
     return candidate
-
-
-async def post_json(http_client: httpx.AsyncClient, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-    """POST JSON and return the parsed response payload."""
-    response = await http_client.post(path, json=payload, timeout=60.0)
-    response.raise_for_status()
-    return response.json()
-
-
-async def get_json(http_client: httpx.AsyncClient, path: str) -> Dict[str, Any]:
-    """GET JSON and return the parsed response payload."""
-    response = await http_client.get(path, timeout=60.0)
-    response.raise_for_status()
-    return response.json()
 
 
 def extract_http_error_detail(exc: httpx.HTTPStatusError) -> str:
@@ -424,11 +411,13 @@ async def main() -> None:
     try:
         if not API_KEY:
             raise RuntimeError("HF_TOKEN is required for submission inference runs.")
-        llm_client = AsyncOpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+        llm_client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
-        async with httpx.AsyncClient(base_url=ENV_BASE_URL, follow_redirects=True) as env_client:
-            initial_observation = await post_json(env_client, "/reset", {"task_id": TASK_NAME})
-            state = await get_json(env_client, "/state")
+        async with SREEnv(base_url=ENV_BASE_URL) as env_client:
+            initial_observation_obj = await env_client.reset(task_id=TASK_NAME)
+            state_obj = await env_client.state()
+            state = state_obj.model_dump() if state_obj is not None else None
+            initial_observation = initial_observation_obj.model_dump()
             if isinstance(state, dict):
                 max_steps = int(state.get("max_steps") or DEFAULT_MAX_STEPS)
             alert_message = str(initial_observation.get("alert_message") or "")
@@ -505,7 +494,8 @@ async def main() -> None:
                                 history=history,
                             )
 
-                    latest_step_result = await post_json(env_client, "/step", action)
+                    latest_step_obj = await env_client.step(SREAction.model_validate(action))
+                    latest_step_result = latest_step_obj.model_dump()
                     reward = float(latest_step_result["reward"]["value"] or 0.0)
                     rewards.append(reward)
                     steps_taken = step
@@ -575,7 +565,8 @@ async def main() -> None:
 
             if not latest_step_result.get("done") and not abort_episode:
                 submit_action = {"tool": "submit", "command": "", "file_path": "", "file_content": ""}
-                latest_step_result = await post_json(env_client, "/step", submit_action)
+                latest_step_obj = await env_client.step(SREAction.model_validate(submit_action))
+                latest_step_result = latest_step_obj.model_dump()
                 reward = float(latest_step_result["reward"]["value"] or 0.0)
                 rewards.append(reward)
                 steps_taken += 1

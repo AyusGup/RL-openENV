@@ -84,6 +84,7 @@ python inference.py
 
 The inference client uses the OpenAI-compatible model endpoint to choose the next environment action step by step and emits the required `[START]`, `[STEP]`, and `[END]` logs.
 By default, `inference.py` runs `task1_wrong_status`. Set `SRE_TASK_NAME` to a specific task id to run a different task.
+It uses the typed async SDK wrapper (`SREEnv`/`SREAction`) for `reset`, `step`, and `state` calls.
 
 You can load values from `.env.example` using your preferred dotenv workflow. Do not commit real secrets.
 
