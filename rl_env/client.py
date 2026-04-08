@@ -1,99 +1,86 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# All rights reserved.
-#
-# This source code is licensed under the BSD-style license found in the
-# LICENSE file in the root directory of this source tree.
+"""SRE Incident Response Environment Clients."""
 
-"""Rl Env Environment Client."""
-
-from typing import Dict
+from typing import Dict, Optional
 
 from openenv.core import EnvClient
 from openenv.core.client_types import StepResult
 from openenv.core.env_server.types import State
 
-from .models import RlAction, RlObservation
+from .models import (
+    SREAction,
+    SREObservation,
+    SREState,
+    SREStepResult,
+)
 
 
-class RlEnv(
-    EnvClient[RlAction, RlObservation, State]
+class SREEnv(
+    EnvClient[SREAction, SREObservation, SREState]
 ):
     """
-    Client for the Rl Env Environment.
+    Client for the SRE Incident Response Environment.
 
-    This client maintains a persistent WebSocket connection to the environment server,
-    enabling efficient multi-step interactions with lower latency.
+    This client maintains a persistent WebSocket connection to the environment
+    server, enabling efficient multi-step interactions with lower latency.
     Each client instance has its own dedicated environment session on the server.
 
     Example:
         >>> # Connect to a running server
-        >>> with RlEnv(base_url="http://localhost:8000") as client:
-        ...     result = client.reset()
-        ...     print(result.observation.echoed_message)
-        ...
-        ...     result = client.step(RlAction(message="Hello!"))
-        ...     print(result.observation.echoed_message)
+        >>> with SREEnv(base_url="http://localhost:7861") as client:
+        ...     obs = client.reset()
+        ...     result = client.step(SREAction(tool="terminal", command="ls /workspace"))
+        ...     print(result.observation.stdout)
 
     Example with Docker:
         >>> # Automatically start container and connect
-        >>> client = RlEnv.from_docker_image("rl_env-env:latest")
+        >>> client = SREEnv.from_docker_image("sre_env:latest", task_id="task_1")
         >>> try:
-        ...     result = client.reset()
-        ...     result = client.step(RlAction(message="Test"))
+        ...     obs = client.reset()
+        ...     result = client.step(SREAction(tool="submit"))
         ... finally:
         ...     client.close()
     """
 
-    def _step_payload(self, action: RlAction) -> Dict:
+    def _step_payload(self, action: SREAction) -> Dict:
         """
-        Convert RlAction to JSON payload for step message.
+        Convert SREAction to JSON payload for step message.
 
         Args:
-            action: RlAction instance
+            action: SREAction instance
 
         Returns:
             Dictionary representation suitable for JSON encoding
         """
-        return {
-            "message": action.message,
-        }
+        return action.model_dump()
 
-    def _parse_result(self, payload: Dict) -> StepResult[RlObservation]:
+    def _parse_result(self, payload: Dict) -> StepResult[SREObservation]:
         """
-        Parse server response into StepResult[RlObservation].
+        Parse server response into StepResult[SREObservation].
 
         Args:
             payload: JSON response data from server
 
         Returns:
-            StepResult with RlObservation
+            StepResult with SREObservation
         """
-        obs_data = payload.get("observation", {})
-        observation = RlObservation(
-            echoed_message=obs_data.get("echoed_message", ""),
-            message_length=obs_data.get("message_length", 0),
-            done=payload.get("done", False),
-            reward=payload.get("reward"),
-            metadata=obs_data.get("metadata", {}),
-        )
-
+        step_result = SREStepResult.model_validate(payload)
         return StepResult(
-            observation=observation,
-            reward=payload.get("reward"),
-            done=payload.get("done", False),
+            observation=step_result.observation,
+            reward=step_result.reward.value,
+            done=step_result.done,
         )
 
-    def _parse_state(self, payload: Dict) -> State:
+    def _parse_state(self, payload: Dict) -> Optional[SREState]:
         """
-        Parse server response into State object.
+        Parse server response into SREState object.
 
         Args:
             payload: JSON response from state request
 
         Returns:
-            State object with episode_id and step_count
+            SREState object, or None if the payload is empty
         """
-        return State(
-            episode_id=payload.get("episode_id"),
-            step_count=payload.get("step_count", 0),
-        )
+        if payload is None:
+            return None
+        return SREState.model_validate(payload)
+
