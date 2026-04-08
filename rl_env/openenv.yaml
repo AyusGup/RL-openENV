@@ -5,3 +5,94 @@ runtime: fastapi
 app: server.app:app
 port: 8000
 
+metadata:
+  name: "SRE Incident Response"
+  description: >
+    A multi-task SRE incident-response environment where agents investigate
+    alerts, inspect logs, patch broken services, validate fixes, and submit
+    deterministic incident resolutions.
+  version: "1.0.0"
+  author: "Hugging Face Spaces"
+  license: "BSD-3-Clause"
+  tags:
+    - sre
+    - incident-response
+    - multi-task
+    - openenv
+
+environment:
+  type: "dict"
+
+  action_space:
+    type: "dict"
+    description: "A dictionary with tool, command, file_path, and file_content"
+    fields:
+      tool:
+        type: "string"
+        values: ["terminal", "editor", "replay", "submit"]
+        description: "The tool to use."
+      command:
+        type: "string"
+        description: "Shell command for terminal mode, or replay name for replay mode."
+      file_path:
+        type: "string"
+        description: "Path of the file to edit (relative to workspace root)."
+      file_content:
+        type: "string"
+        description: "New content of the file."
+
+  observation_space:
+    type: "dict"
+    fields:
+      stdout:
+        type: "string"
+        description: "Standard output from the latest action."
+      stderr:
+        type: "string"
+        description: "Standard error from the latest action."
+      exit_code:
+        type: "int"
+        description: "Exit code from the latest command."
+      file_tree:
+        type: "list"
+        description: "Current workspace file tree snapshot."
+      alert_message:
+        type: "string"
+        description: "Current incident alert shown to the agent."
+
+  reward:
+    formula: >
+      reward = task_progress + submission_quality - invalid_action_penalty
+    components:
+      task_progress:
+        weight: 1.0
+        type: "positive"
+        trigger: "When valid actions make progress toward incident resolution."
+      submission_quality:
+        weight: 1.0
+        type: "positive"
+        trigger: "When submit output matches the expected deterministic result."
+      invalid_action_penalty:
+        weight: -1.0
+        type: "negative"
+        trigger: "When an action fails validation or executes invalid commands."
+
+endpoints:
+  reset: "/reset"
+  step: "/step"
+  state: "/state"
+  schema: "/schema"
+  ws: "/ws"
+
+tasks:
+  - id: "task1_wrong_status"
+    name: "Task 1: FastAPI Status Code Mismatch"
+    difficulty: "easy"
+
+  - id: "task2_retry_logic"
+    name: "Task 2: Off-by-One Retry Bug"
+    difficulty: "medium"
+
+  - id: "task3_cascading_failure"
+    name: "Task 3: Cascading Timeout Failure"
+    difficulty: "hard"
