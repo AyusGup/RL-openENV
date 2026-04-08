@@ -15,6 +15,7 @@ from sre_env.server.sre_environment import SREEnvironment
 PACKAGE_ROOT = Path(os.getenv("OPENENV_REPO_ROOT", Path(__file__).resolve().parents[1]))
 FIXTURES_DIR = Path(os.getenv("OPENENV_FIXTURES_DIR", PACKAGE_ROOT / "fixtures"))
 WORKSPACE_ROOT = Path(os.getenv("OPENENV_WORKSPACE_ROOT", PACKAGE_ROOT / "workspace"))
+PORT = int(os.getenv("PORT", 7860))
 
 app = FastAPI(title="SRE Incident Response OpenEnv")
 
@@ -63,7 +64,7 @@ async def get_state():
 
 def main() -> None:
     """Run the FastAPI app with Uvicorn."""
-    uvicorn.run(app, host="0.0.0.0", port=7860)
+    uvicorn.run(app, host="0.0.0.0", port=PORT)
 
 
 if __name__ == "__main__":
