@@ -59,7 +59,7 @@ async def step(action: SREAction):
 @app.get("/state", response_model=Optional[SREState])
 async def get_state():
     """Get the current episode state."""
-    return env.state
+    return env.get_api_state()
 
 
 def main() -> None:

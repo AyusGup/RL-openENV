@@ -1,0 +1,6 @@
+{
+  "endpoint": "/api/upstream/health",
+  "p50_ms": 210,
+  "p95_ms": 880,
+  "error_rate": 0.18
+}

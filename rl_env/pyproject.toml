@@ -41,5 +41,5 @@ server = "rl_env.server.app:main"
 
 [tool.setuptools]
 include-package-data = true
-packages = ["rl_env", "rl_env.server"]
-package-dir = { "rl_env" = ".", "rl_env.server" = "server" }
+packages = ["rl_env", "rl_env.providers", "rl_env.server", "rl_env.tasks", "rl_env.utils"]
+package-dir = { "rl_env" = ".", "rl_env.providers" = "providers", "rl_env.server" = "server", "rl_env.tasks" = "tasks", "rl_env.utils" = "utils" }

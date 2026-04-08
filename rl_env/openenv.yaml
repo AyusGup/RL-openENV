@@ -81,8 +81,7 @@ endpoints:
   reset: "/reset"
   step: "/step"
   state: "/state"
-  schema: "/schema"
-  ws: "/ws"
+  tasks: "/tasks"
 
 tasks:
   - id: "task1_wrong_status"

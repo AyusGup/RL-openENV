@@ -6,12 +6,20 @@ from openenv.core import EnvClient
 from openenv.core.client_types import StepResult
 from openenv.core.env_server.types import State
 
-from .models import (
-    SREAction,
-    SREObservation,
-    SREState,
-    SREStepResult,
-)
+try:
+    from .models import (
+        SREAction,
+        SREObservation,
+        SREState,
+        SREStepResult,
+    )
+except ImportError:
+    from models import (  # type: ignore
+        SREAction,
+        SREObservation,
+        SREState,
+        SREStepResult,
+    )
 
 
 class SREEnv(
@@ -63,11 +71,19 @@ class SREEnv(
         Returns:
             StepResult with SREObservation
         """
-        step_result = SREStepResult.model_validate(payload)
+        if "observation" not in payload:
+            raise ValueError("Expected wrapped payload with 'observation', 'reward', and 'done'.")
+
+        observation = SREObservation.model_validate(payload.get("observation") or {})
+        reward_payload = payload.get("reward", 0.0)
+        if isinstance(reward_payload, dict):
+            reward_value = float(reward_payload.get("value", 0.0) or 0.0)
+        else:
+            reward_value = float(reward_payload or 0.0)
         return StepResult(
-            observation=step_result.observation,
-            reward=step_result.reward.value,
-            done=step_result.done,
+            observation=observation,
+            reward=reward_value,
+            done=bool(payload.get("done", False)),
         )
 
     def _parse_state(self, payload: Dict) -> Optional[SREState]:
@@ -83,4 +99,3 @@ class SREEnv(
         if payload is None:
             return None
         return SREState.model_validate(payload)
-

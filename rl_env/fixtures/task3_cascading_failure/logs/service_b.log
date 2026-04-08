@@ -1,0 +1,5 @@
+2026-03-25 03:12:01 INFO  [main] POST /process received from service-a
+2026-03-25 03:12:01 DEBUG [database] get_enrichment_data(42) started
+2026-03-25 03:12:01 DEBUG [database] Query execution time: 247ms
+2026-03-25 03:12:01 INFO  [main] POST /process completed in 263ms -> 200 OK
+2026-03-25 03:12:01 WARN  [main] Client disconnected before response was sent

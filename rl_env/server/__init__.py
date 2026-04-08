@@ -4,8 +4,8 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-"""Rl Env environment server components."""
+"""RL env server components."""
 
-from .rl_env_environment import RlEnvironment
+from .sre_environment import SREEnvironment
 
-__all__ = ["RlEnvironment"]
+__all__ = ["SREEnvironment"]

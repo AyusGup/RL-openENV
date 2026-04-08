@@ -1,255 +1,133 @@
 ---
-title: Rl Env Environment Server
-emoji: 🎮
-colorFrom: indigo
-colorTo: pink
+title: SRE Incident Response OpenEnv
+emoji: "🛠️"
+colorFrom: blue
+colorTo: green
 sdk: docker
-pinned: false
 app_port: 8000
-base_path: /web
-tags:
-  - openenv
+pinned: false
 ---
 
-# Rl Env Environment
+# SRE Incident Response - OpenEnv
 
-A simple test environment that echoes back messages. Perfect for testing the env APIs as well as demonstrating environment usage patterns.
+An OpenEnv-style environment for evaluating agents on realistic SRE incident-response tasks: investigating alerts, reading logs, fixing broken services, validating the fix, and submitting for grading.
 
-## Quick Start
+## Features
+- **Three-task benchmark**: Easy, medium, and hard incident scenarios with distinct failure modes.
+- **Action Space**: Simple `terminal`, `editor`, `replay`, and `submit` tools.
+- **Provider Pattern**: Swappable data sources for logs, metrics, and execution.
+- **Deterministic Grading**: Using `difflib`, `pytest` exit codes, and regex-based RCA scoring.
 
-The simplest way to use the Rl Env environment is through the `RlEnv` class:
+## Motivation
+This environment models a real operational workflow humans perform during incident response: inspect alerts, read logs, inspect source, apply a fix, run verification, and submit a resolution. The tasks progress from a simple API contract bug to retry logic drift and finally a multi-service timeout incident with an RCA requirement.
 
+## Interface
+Action space:
+- `terminal`: run one workspace-scoped shell command
+- `editor`: replace one file with full contents
+- `replay`: run a deterministic task-specific validation probe
+- `submit`: finish the episode and trigger grading
+
+Observation model:
+- `stdout`
+- `stderr`
+- `exit_code`
+- `file_tree`
+- `alert_message`
+
+Step result model:
+- `observation`
+- `reward`
+- `done`
+- `info`
+
+State model:
+- `episode_id`
+- `task_id`
+- `task_name`
+- `step_count`
+- `max_steps`
+- `cumulative_reward`
+- `done`
+- `workspace_root`
+
+## Repository Layout
+- `openenv.yaml`: OpenEnv manifest used by `openenv validate` and `openenv push`.
+- `fixtures/`: task fixtures, hidden tests, and replay assets.
+- `pyproject.toml`, `uv.lock`, `Dockerfile`: self-contained deployment dependencies/build config.
+
+Python client (typed async):
 ```python
-from rl_env import RlAction, RlEnv
+from sre_env import SREAction, SREEnv
 
-try:
-    # Create environment from Docker image
-    rl_envenv = RlEnv.from_docker_image("rl_env-env:latest")
-
-    # Reset
-    result = rl_envenv.reset()
-    print(f"Reset: {result.observation.echoed_message}")
-
-    # Send multiple messages
-    messages = ["Hello, World!", "Testing echo", "Final message"]
-
-    for msg in messages:
-        result = rl_envenv.step(RlAction(message=msg))
-        print(f"Sent: '{msg}'")
-        print(f"  → Echoed: '{result.observation.echoed_message}'")
-        print(f"  → Length: {result.observation.message_length}")
-        print(f"  → Reward: {result.reward}")
-
-finally:
-    # Always clean up
-    rl_envenv.close()
+async with SREEnv("http://127.0.0.1:8000") as env:
+    observation = await env.reset(task_id="task2_retry_logic")
+    result = await env.step(SREAction(tool="terminal", command="cat app/retry_handler.py"))
+    state = await env.state()
 ```
 
-That's it! The `RlEnv.from_docker_image()` method handles:
-- Starting the Docker container
-- Waiting for the server to be ready
-- Connecting to the environment
-- Container cleanup when you call `close()`
-
-## Building the Docker Image
-
-Before using the environment, you need to build the Docker image:
-
+## Linux Setup
+From this directory (`sre_env`), create a virtual environment and install dependencies:
 ```bash
-# From project root
-docker build -t rl_env-env:latest -f server/Dockerfile .
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e .
 ```
 
-## Deploying to Hugging Face Spaces
-
-You can easily deploy your OpenEnv environment to Hugging Face Spaces using the `openenv push` command:
-
+Validate the OpenEnv manifest locally:
 ```bash
-# From the environment directory (where openenv.yaml is located)
-openenv push
-
-# Or specify options
-openenv push --namespace my-org --private
+openenv validate .
 ```
 
-The `openenv push` command will:
-1. Validate that the directory is an OpenEnv environment (checks for `openenv.yaml`)
-2. Prepare a custom build for Hugging Face Docker space (enables web interface)
-3. Upload to Hugging Face (ensuring you're logged in)
-
-### Prerequisites
-
-- Authenticate with Hugging Face: The command will prompt for login if not already authenticated
-
-### Options
-
-- `--directory`, `-d`: Directory containing the OpenEnv environment (defaults to current directory)
-- `--repo-id`, `-r`: Repository ID in format 'username/repo-name' (defaults to 'username/env-name' from openenv.yaml)
-- `--base-image`, `-b`: Base Docker image to use (overrides Dockerfile FROM)
-- `--private`: Deploy the space as private (default: public)
-
-### Examples
-
+Start the environment server in one terminal:
 ```bash
-# Push to your personal namespace (defaults to username/env-name from openenv.yaml)
-openenv push
-
-# Push to a specific repository
-openenv push --repo-id my-org/my-env
-
-# Push with a custom base image
-openenv push --base-image ghcr.io/meta-pytorch/openenv-base:latest
-
-# Push as a private space
-openenv push --private
-
-# Combine options
-openenv push --repo-id my-org/my-env --base-image custom-base:latest --private
+source .venv/bin/activate
+cd ..
+python -m uvicorn server.app:app --host 0.0.0.0 --port 8000
 ```
 
-After deployment, your space will be available at:
-`https://huggingface.co/spaces/<repo-id>`
+## Hugging Face Secrets
+For Hugging Face Spaces, add these in your Space settings:
+- `API_BASE_URL`
+- `MODEL_NAME`
+- `HF_TOKEN`
 
-The deployed space includes:
-- **Web Interface** at `/web` - Interactive UI for exploring the environment
-- **API Documentation** at `/docs` - Full OpenAPI/Swagger interface
-- **Health Check** at `/health` - Container health monitoring
-- **WebSocket** at `/ws` - Persistent session endpoint for low-latency interactions
+Port configuration:
+- Space metadata `app_port` is set to `8000` in this README front matter.
+- Runtime uses `PORT` when provided by the platform; otherwise the app defaults to `8000`.
 
-## Environment Details
+Put `HF_TOKEN` in Space Secrets, not plain Variables.
 
-### Action
-**RlAction**: Contains a single field
-- `message` (str) - The message to echo back
-
-### Observation
-**RlObservation**: Contains the echo response and metadata
-- `echoed_message` (str) - The message echoed back
-- `message_length` (int) - Length of the message
-- `reward` (float) - Reward based on message length (length × 0.1)
-- `done` (bool) - Always False for echo environment
-- `metadata` (dict) - Additional info like step count
-
-### Reward
-The reward is calculated as: `message_length × 0.1`
-- "Hi" → reward: 0.2
-- "Hello, World!" → reward: 1.3
-- Empty message → reward: 0.0
-
-## Advanced Usage
-
-### Connecting to an Existing Server
-
-If you already have a Rl Env environment server running, you can connect directly:
-
-```python
-from rl_env import RlEnv
-
-# Connect to existing server
-rl_envenv = RlEnv(base_url="<ENV_HTTP_URL_HERE>")
-
-# Use as normal
-result = rl_envenv.reset()
-result = rl_envenv.step(RlAction(message="Hello!"))
-```
-
-Note: When connecting to an existing server, `rl_envenv.close()` will NOT stop the server.
-
-### Using the Context Manager
-
-The client supports context manager usage for automatic connection management:
-
-```python
-from rl_env import RlAction, RlEnv
-
-# Connect with context manager (auto-connects and closes)
-with RlEnv(base_url="http://localhost:8000") as env:
-    result = env.reset()
-    print(f"Reset: {result.observation.echoed_message}")
-    # Multiple steps with low latency
-    for msg in ["Hello", "World", "!"]:
-        result = env.step(RlAction(message=msg))
-        print(f"Echoed: {result.observation.echoed_message}")
-```
-
-The client uses WebSocket connections for:
-- **Lower latency**: No HTTP connection overhead per request
-- **Persistent session**: Server maintains your environment state
-- **Efficient for episodes**: Better for many sequential steps
-
-### Concurrent WebSocket Sessions
-
-The server supports multiple concurrent WebSocket connections. To enable this,
-modify `server/app.py` to use factory mode:
-
-```python
-# In server/app.py - use factory mode for concurrent sessions
-app = create_app(
-    RlEnvironment,  # Pass class, not instance
-    RlAction,
-    RlObservation,
-    max_concurrent_envs=4,  # Allow 4 concurrent sessions
-)
-```
-
-Then multiple clients can connect simultaneously:
-
-```python
-from rl_env import RlAction, RlEnv
-from concurrent.futures import ThreadPoolExecutor
-
-def run_episode(client_id: int):
-    with RlEnv(base_url="http://localhost:8000") as env:
-        result = env.reset()
-        for i in range(10):
-            result = env.step(RlAction(message=f"Client {client_id}, step {i}"))
-        return client_id, result.observation.message_length
-
-# Run 4 episodes concurrently
-with ThreadPoolExecutor(max_workers=4) as executor:
-    results = list(executor.map(run_episode, range(4)))
-```
-
-## Development & Testing
-
-### Direct Environment Testing
-
-Test the environment logic directly without starting the HTTP server:
-
+Deploy to Hugging Face Spaces with:
 ```bash
-# From the server directory
-python3 server/rl_env_environment.py
+openenv push . --repo-id Jha-ayush/rl-openenv
 ```
 
-This verifies that:
-- Environment resets correctly
-- Step executes actions properly
-- State tracking works
-- Rewards are calculated correctly
+Runtime workspace is created under `workspace/` by default.
 
-### Running Locally
+To create a token:
+1. Sign in to Hugging Face.
+2. Open `https://huggingface.co/settings/tokens`.
+3. Create a fine-grained token.
+4. Grant permission to make Inference Providers calls.
 
-Run the server locally for development:
+## Tasks
 
-```bash
-uvicorn server.app:app --reload
-```
+### Task 1: FastAPI Status Code Mismatch
+Difficulty: easy
 
-## Project Structure
+The item-creation flow violates its API contract. The agent must inspect logs and source, identify the bug, fix it, run tests, and submit the workspace for deterministic grading.
 
-```
-rl_env/
-├── .dockerignore         # Docker build exclusions
-├── __init__.py            # Module exports
-├── README.md              # This file
-├── openenv.yaml           # OpenEnv manifest
-├── pyproject.toml         # Project metadata and dependencies
-├── uv.lock                # Locked dependencies (generated)
-├── client.py              # RlEnv client
-├── models.py              # Action and Observation models
-└── server/
-    ├── __init__.py        # Server module exports
-    ├── rl_env_environment.py  # Core environment logic
-    ├── app.py             # FastAPI application (HTTP + WebSocket endpoints)
-    └── Dockerfile         # Container image definition
-```
+### Task 2: Off-by-One Retry Bug
+Difficulty: medium
+
+The upstream retry handler gives up one attempt too early. The agent must inspect logs, patch the retry loop, verify the fix, and write an `RCA.md`.
+
+### Task 3: Cascading Timeout Failure
+Difficulty: hard
+
+Service A times out before Service B can complete a slower enrichment path. The agent must inspect logs across both services, adjust the caller timeout, improve Service B latency, verify the tests, and write an `RCA.md`.
+
+## License
+MIT

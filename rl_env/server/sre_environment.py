@@ -1,5 +1,6 @@
-"""Core SRE Environment controller."""
+"""Core SRE Environment controller (sync implementation)."""
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import Optional, Tuple
@@ -7,24 +8,29 @@ from uuid import uuid4
 
 from openenv.core.env_server.interfaces import Environment
 from openenv.core.env_server.types import State
-from sre_env.models import SREAction, SREObservation, SREReward, SREState, SREStepInfo, SREStepResult
-from sre_env.providers.sandbox_executor import SandboxExecutor
-from sre_env.providers.static_alert import StaticAlertProvider
-from sre_env.server.grader import SREGrader
-from sre_env.server.replay import ReplayExecutor
-from sre_env.server.reward import SREStepRewarder
-from sre_env.tasks.registry import TaskRegistry
-from sre_env.utils.file_ops import get_file_tree, setup_workspace
+
+try:
+    from ..models import SREAction, SREObservation, SREState
+    from ..providers.sandbox_executor import SandboxExecutor
+    from ..providers.static_alert import StaticAlertProvider
+    from ..tasks.registry import TaskRegistry
+    from ..utils.file_ops import get_file_tree, setup_workspace
+    from .grader import SREGrader
+    from .replay import ReplayExecutor
+    from .reward import SREStepRewarder
+except ImportError:
+    from models import SREAction, SREObservation, SREState
+    from providers.sandbox_executor import SandboxExecutor
+    from providers.static_alert import StaticAlertProvider
+    from tasks.registry import TaskRegistry
+    from utils.file_ops import get_file_tree, setup_workspace
+    from server.grader import SREGrader
+    from server.replay import ReplayExecutor
+    from server.reward import SREStepRewarder
 
 
 class SREEnvironment(Environment):
-    """
-    SRE Incident Response environment.
-
-    This environment models realistic SRE workflows across fixture-backed tasks:
-    inspect alerts, run terminal checks, edit files, replay canned workflows,
-    and submit for deterministic grading.
-    """
+    """SRE incident-response environment."""
 
     SUPPORTS_CONCURRENT_SESSIONS: bool = True
 
@@ -44,14 +50,9 @@ class SREEnvironment(Environment):
         self._task_name = ""
         self._max_steps = 50
         self._cumulative_reward = 0.0
-        self.logger = logging.getLogger("sre_env")
+        self.logger = logging.getLogger("rl_env")
 
-    # ------------------------------------------------------------------
-    # Core API
-    # ------------------------------------------------------------------
-
-    async def reset(self, task_id: str | None = None) -> SREObservation:
-        """Reset the environment to a fresh task workspace."""
+    def reset(self, task_id: str | None = None) -> SREObservation:
         resolved_task_id = task_id or self.registry.default_task_id()
         if not resolved_task_id:
             return SREObservation(stderr="Error: No tasks are configured.")
@@ -77,23 +78,24 @@ class SREEnvironment(Environment):
         self._cumulative_reward = 0.0
         self.rewarder = SREStepRewarder()
 
-        alert_data = await self.alert_provider.get_alert(resolved_task_id)
+        alert_data = asyncio.run(self.alert_provider.get_alert(resolved_task_id))
         file_tree = get_file_tree(self.workspace_root)
         self.rewarder.seed_initial_files(file_tree)
 
         return SREObservation(
             alert_message=alert_data.get("message", ""),
             file_tree=file_tree,
+            reward=0.0,
+            done=False,
         )
 
-    async def step(self, action: SREAction) -> SREStepResult:
-        """Execute one environment step for the given action."""
+    def step(self, action: SREAction) -> SREObservation:
         if not self._episode_initialized or self._episode_done:
-            return self._error_step_result("Error: No active episode. Call reset() first.")
+            return self._error_observation("Error: No active episode. Call reset() first.")
 
         task_config = self.registry.get_task(self._task_id)
         if not task_config:
-            return self._error_step_result("Error: Active task configuration lost.")
+            return self._error_observation("Error: Active task configuration lost.")
 
         self._state.step_count += 1
         reached_step_limit = self._state.step_count >= self._max_steps
@@ -104,14 +106,14 @@ class SREEnvironment(Environment):
         final_score: Optional[float] = None
 
         if action.tool == "terminal":
-            observation, last_action_error = await self._run_terminal_action(action)
+            observation, last_action_error = self._run_terminal_action(action)
         elif action.tool == "editor":
             observation, info_message, last_action_error = self._run_editor_action(action)
         elif action.tool == "replay":
             observation, info_message, last_action_error = self._run_replay_action(action)
         elif action.tool == "submit":
             self._episode_done = True
-            final_score = await self._grade_current_workspace(task_config)
+            final_score = self._grade_current_workspace(task_config)
             observation.stdout = f"Episode submitted for grading. FINAL SCORE: {final_score:.2f}"
             info_message = observation.stdout
         else:
@@ -120,34 +122,35 @@ class SREEnvironment(Environment):
 
         if reached_step_limit and action.tool != "submit":
             self._episode_done = True
-            final_score = await self._grade_current_workspace(task_config)
+            final_score = self._grade_current_workspace(task_config)
             info_message = (
                 f"Step budget exhausted at {self._state.step_count}/{self._max_steps}. "
                 f"Workspace auto-graded with FINAL SCORE: {final_score:.2f}"
             )
 
         observation.file_tree = get_file_tree(self.workspace_root)
-        reward_value = self._compute_reward(action, observation, task_config.expected_fix_files, final_score)
+        reward_value = self._compute_reward(
+            action,
+            observation,
+            task_config.expected_fix_files,
+            final_score,
+        )
         self._cumulative_reward += reward_value
 
-        return SREStepResult(
-            observation=observation,
-            reward=SREReward(value=reward_value),
-            done=self._episode_done,
-            info=SREStepInfo(
-                score=final_score,
-                message=info_message,
-                last_action_error=last_action_error,
-            ),
-        )
+        observation.reward = reward_value
+        observation.done = self._episode_done
+        observation.metadata = {
+            "score": final_score,
+            "message": info_message,
+            "last_action_error": last_action_error,
+        }
+        return observation
 
     @property
     def state(self) -> State:
-        """Get current minimal OpenEnv state."""
         return self._state
 
     def get_api_state(self) -> Optional[SREState]:
-        """Get rich SRE episode state for API responses."""
         if not self._episode_initialized:
             return None
         return SREState(
@@ -162,7 +165,6 @@ class SREEnvironment(Environment):
         )
 
     def get_internal_state(self) -> dict:
-        """Return internal state snapshot for debugging/grading endpoints."""
         if not self._episode_initialized:
             return {"state": None}
         return {
@@ -176,16 +178,10 @@ class SREEnvironment(Environment):
             "workspace_root": str(self.workspace_root),
         }
 
-    # ------------------------------------------------------------------
-    # Action handlers
-    # ------------------------------------------------------------------
-
-    async def _run_terminal_action(self, action: SREAction) -> Tuple[SREObservation, Optional[str]]:
+    def _run_terminal_action(self, action: SREAction) -> Tuple[SREObservation, Optional[str]]:
         timeout = 30 if "pytest" in action.command.lower() else 10
-        stdout, stderr, exit_code = await self.executor.execute(
-            action.command,
-            self.workspace_root,
-            timeout=timeout,
+        stdout, stderr, exit_code = asyncio.run(
+            self.executor.execute(action.command, self.workspace_root, timeout=timeout)
         )
         observation = SREObservation(stdout=stdout, stderr=stderr, exit_code=exit_code)
         return observation, (stderr or None)
@@ -237,14 +233,10 @@ class SREEnvironment(Environment):
             last_action_error = observation.stderr
         return observation, info_message, last_action_error
 
-    # ------------------------------------------------------------------
-    # Scoring helpers
-    # ------------------------------------------------------------------
-
-    async def _grade_current_workspace(self, task_config) -> float:
+    def _grade_current_workspace(self, task_config) -> float:
         assert self._episode_initialized
         fixture_path = self.fixtures_dir / self._task_id
-        return await self.grader.grade_episode(task_config, fixture_path, self.workspace_root)
+        return asyncio.run(self.grader.grade_episode(task_config, fixture_path, self.workspace_root))
 
     def _compute_reward(
         self,
@@ -259,10 +251,10 @@ class SREEnvironment(Environment):
             return 0.0
         return self.rewarder.calculate_reward(action, observation, expected_fix_files)
 
-    def _error_step_result(self, message: str) -> SREStepResult:
-        return SREStepResult(
-            observation=SREObservation(stderr=message),
-            reward=SREReward(value=0.0),
+    def _error_observation(self, message: str) -> SREObservation:
+        return SREObservation(
+            stderr=message,
+            reward=0.0,
             done=True,
-            info=SREStepInfo(last_action_error=message),
+            metadata={"score": None, "message": "", "last_action_error": message},
         )
