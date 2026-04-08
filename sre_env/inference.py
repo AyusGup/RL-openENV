@@ -18,7 +18,7 @@ from sre_env import SREAction, SREEnv
 API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
 MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
 API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
-ENV_BASE_URL = os.getenv("OPENENV_BASE_URL") or "http://127.0.0.1:7861"
+IMAGE_NAME = os.getenv("IMAGE_NAME")  # Docker image for the SRE env server
 TASK_NAME = os.getenv("SRE_TASK_NAME") or "task1_wrong_status"
 BENCHMARK = os.getenv("SRE_BENCHMARK") or "sre_env"
 DEFAULT_MAX_STEPS = 8
@@ -410,9 +410,16 @@ async def main() -> None:
             raise RuntimeError("HF_TOKEN is required for submission inference runs.")
         llm_client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
-        async with SREEnv(base_url=ENV_BASE_URL) as env_client:
-            initial_observation_obj = await env_client.reset(task_id=TASK_NAME)
-            state_obj = await env_client.state()
+        # On HF Spaces the env server is already running inside this container
+        # at localhost:7861 (started by docker-entrypoint.sh).  When running
+        # locally, IMAGE_NAME tells us to spin up a fresh container.
+        if IMAGE_NAME:
+            env = await SREEnv.from_docker_image(IMAGE_NAME, task_id=TASK_NAME)
+        else:
+            env = SREEnv(base_url="http://127.0.0.1:7861")
+        async with env:
+            initial_observation_obj = await env.reset(task_id=TASK_NAME)
+            state_obj = await env.state()
             state = state_obj.model_dump() if state_obj is not None else None
             initial_observation = initial_observation_obj.model_dump()
             if isinstance(state, dict):
@@ -491,7 +498,7 @@ async def main() -> None:
                                 history=history,
                             )
 
-                    latest_step_obj = await env_client.step(SREAction.model_validate(action))
+                    latest_step_obj = await env.step(SREAction.model_validate(action))
                     latest_step_result = latest_step_obj.model_dump()
                     reward = float(latest_step_result["reward"]["value"] or 0.0)
                     rewards.append(reward)
@@ -574,7 +581,7 @@ async def main() -> None:
 
             if not latest_step_result.get("done") and not abort_episode:
                 submit_action = {"tool": "submit", "command": "", "file_path": "", "file_content": ""}
-                latest_step_obj = await env_client.step(SREAction.model_validate(submit_action))
+                latest_step_obj = await env.step(SREAction.model_validate(submit_action))
                 latest_step_result = latest_step_obj.model_dump()
                 reward = float(latest_step_result["reward"]["value"] or 0.0)
                 rewards.append(reward)
