@@ -4,6 +4,7 @@ emoji: "🛠️"
 colorFrom: blue
 colorTo: green
 sdk: docker
+app_port: 7861
 pinned: false
 ---
 
@@ -91,6 +92,10 @@ For Hugging Face Spaces, add these in your Space settings:
 - `API_BASE_URL`
 - `MODEL_NAME`
 - `HF_TOKEN`
+
+Port configuration:
+- Space metadata `app_port` is set to `7861` in this README front matter.
+- Runtime uses `PORT` when provided by the platform; otherwise the app defaults to `7861`.
 
 Put `HF_TOKEN` in Space Secrets, not plain Variables.
 
