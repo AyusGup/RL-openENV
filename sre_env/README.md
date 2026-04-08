@@ -59,11 +59,12 @@ Python client (typed async):
 ```python
 from sre_env import SREAction, SREEnv
 
-async with SREEnv("http://127.0.0.1:7860") as env:
+async with SREEnv() as env:
     observation = await env.reset(task_id="task2_retry_logic")
     result = await env.step(SREAction(tool="terminal", command="cat app/retry_handler.py"))
     state = await env.state()
 ```
+`SREEnv()` resolves base URL in this order: explicit arg, `OPENENV_BASE_URL`, `.openenv_port`, then `http://127.0.0.1:7860`.
 
 ## Linux Setup
 From this directory (`sre_env`), create a virtual environment and install dependencies:
@@ -83,8 +84,9 @@ Start the environment server in one terminal:
 ```bash
 source .venv/bin/activate
 cd ..
-python -m uvicorn sre_env.server.app:app --host 127.0.0.1 --port 7860
+python -m sre_env.server.app
 ```
+Server startup prefers `PORT` when set. If `PORT` is unset, it tries `7860` and falls back to an OS-selected free port when `7860` is busy. The selected port is written to `.openenv_port`.
 
 ## Hugging Face Secrets
 For Hugging Face Spaces, add these in your Space settings:

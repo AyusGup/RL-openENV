@@ -16,7 +16,8 @@ For package/environment setup and deployment details, see:
 Start the environment server first, then from this repository root run:
 ```bash
 source .venv/bin/activate
-export OPENENV_BASE_URL="http://127.0.0.1:7860"
+# Optional override. If omitted, the client reads .openenv_port then falls back to 7860.
+# export OPENENV_BASE_URL="http://127.0.0.1:7860"
 export SRE_TASK_NAME="task1_wrong_status"
 export API_BASE_URL="https://router.huggingface.co/v1"
 export MODEL_NAME="Qwen/Qwen2.5-72B-Instruct"

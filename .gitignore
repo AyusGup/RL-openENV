@@ -31,3 +31,4 @@ sre_env/fixtures/*/workspace/
 .env
 
 .test-tmp
+.openenv_port

@@ -7,13 +7,14 @@ from typing import List, Optional
 import httpx
 
 from .models import SREAction, SREObservation, SREState, SREStepResult, TaskSummary
+from .utils.port_resolver import resolve_base_url
 
 
 class SREEnv:
     """Async client wrapper around the SRE OpenEnv endpoints."""
 
-    def __init__(self, base_url: str = "http://127.0.0.1:7860", timeout: float = 60.0):
-        self.base_url = base_url.rstrip("/")
+    def __init__(self, base_url: Optional[str] = None, timeout: float = 60.0):
+        self.base_url = resolve_base_url(base_url)
         self.timeout = timeout
         self._client = httpx.AsyncClient(
             base_url=self.base_url,

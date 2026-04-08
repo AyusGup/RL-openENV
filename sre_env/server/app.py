@@ -10,6 +10,12 @@ import uvicorn
 
 from sre_env.models import SREAction, SREObservation, SREState, SREStepResult, TaskSummary
 from sre_env.server.sre_environment import SREEnvironment
+from sre_env.utils.port_resolver import (
+    DEFAULT_OPENENV_PORT,
+    DEFAULT_SERVER_HOST,
+    resolve_server_port,
+    write_selected_port,
+)
 
 # Configuration
 PACKAGE_ROOT = Path(os.getenv("OPENENV_REPO_ROOT", Path(__file__).resolve().parents[1]))
@@ -63,7 +69,11 @@ async def get_state():
 
 def main() -> None:
     """Run the FastAPI app with Uvicorn."""
-    uvicorn.run(app, host="0.0.0.0", port=7860)
+    host = os.getenv("HOST") or DEFAULT_SERVER_HOST
+    port = resolve_server_port(host=host, preferred_port=DEFAULT_OPENENV_PORT)
+    write_selected_port(port)
+    print(f"[OPENENV] Starting server on http://{host}:{port}", flush=True)
+    uvicorn.run(app, host=host, port=port)
 
 
 if __name__ == "__main__":

@@ -14,15 +14,20 @@ from typing import Any, Dict, List, Optional
 import httpx
 from openai import OpenAI
 from sre_env import SREAction, SREEnv
+from sre_env.utils.port_resolver import resolve_base_url
 
 API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
 MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
 API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
-ENV_BASE_URL = os.getenv("OPENENV_BASE_URL") or "http://127.0.0.1:7860"
 TASK_NAME = os.getenv("SRE_TASK_NAME") or "task1_wrong_status"
 BENCHMARK = os.getenv("SRE_BENCHMARK") or "sre_env"
 DEFAULT_MAX_STEPS = 8
 SUCCESS_SCORE_THRESHOLD = 0.1
+
+
+def env_base_url() -> str:
+    """Resolve OpenEnv base URL with env/file/default precedence."""
+    return resolve_base_url()
 
 
 @lru_cache(maxsize=16)
@@ -410,7 +415,7 @@ async def main() -> None:
             raise RuntimeError("HF_TOKEN is required for submission inference runs.")
         llm_client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
-        async with SREEnv(base_url=ENV_BASE_URL) as env_client:
+        async with SREEnv(base_url=env_base_url()) as env_client:
             initial_observation_obj = await env_client.reset(task_id=TASK_NAME)
             state_obj = await env_client.state()
             state = state_obj.model_dump() if state_obj is not None else None
