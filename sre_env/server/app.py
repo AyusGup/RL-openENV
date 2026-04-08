@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException
 from pydantic import BaseModel
 import uvicorn
 
@@ -39,9 +39,10 @@ async def list_tasks():
     return env.registry.list_summaries()
 
 @app.post("/reset", response_model=SREObservation)
-async def reset(request: ResetRequest):
+async def reset(request: ResetRequest = Body(default_factory=ResetRequest)):
     """Start a new incident response episode."""
-    observation = await env.reset(request.task_id)
+    task_id = request.task_id or env.registry.default_task_id()
+    observation = await env.reset(task_id)
     if observation.stderr.startswith("Error:"):
         raise HTTPException(status_code=400, detail=observation.stderr)
     return observation
@@ -59,7 +60,11 @@ async def get_state():
     """Get the current episode state."""
     return env.state
 
-if __name__ == "__main__":
-   """Run the FastAPI app with Uvicorn."""
 
-   uvicorn.run(app, host="0.0.0.0", port=7860)
+def main() -> None:
+    """Run the FastAPI app with Uvicorn."""
+    uvicorn.run(app, host="0.0.0.0", port=7860)
+
+
+if __name__ == "__main__":
+    main()

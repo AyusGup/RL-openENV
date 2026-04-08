@@ -54,7 +54,6 @@ State model:
 - `openenv.yaml`: OpenEnv manifest used by `openenv validate` and `openenv push`.
 - `fixtures/`: task fixtures, hidden tests, and replay assets.
 - `pyproject.toml`, `uv.lock`, `Dockerfile`: self-contained deployment dependencies/build config.
-- `../inference.py`: optional runner script for model-driven evaluation, not required by package validation.
 
 Python client (typed async):
 ```python
@@ -87,24 +86,6 @@ cd ..
 python -m uvicorn sre_env.server.app:app --host 127.0.0.1 --port 7860
 ```
 
-In a second terminal (repo root), activate the environment, set the inference variables, and run the baseline client:
-```bash
-cd ..
-source .venv/bin/activate
-export OPENENV_BASE_URL="http://127.0.0.1:7860"
-export SRE_TASK_NAME="task1_wrong_status"
-export API_BASE_URL="https://router.huggingface.co/v1"
-export MODEL_NAME="Qwen/Qwen2.5-72B-Instruct"
-export HF_TOKEN="hf_your_token_here"
-python inference.py
-```
-
-The inference client uses the OpenAI-compatible model endpoint to choose the next environment action step by step and emits the required `[START]`, `[STEP]`, and `[END]` logs.
-By default, `inference.py` runs `task1_wrong_status`. Set `SRE_TASK_NAME` to a specific task id to run a different task.
-It uses the typed async SDK wrapper (`SREEnv`/`SREAction`) for `reset`, `step`, and `state` calls.
-
-You can load values from `.env.example` using your preferred dotenv workflow. Do not commit real secrets.
-
 ## Hugging Face Secrets
 For Hugging Face Spaces, add these in your Space settings:
 - `API_BASE_URL`
@@ -115,7 +96,7 @@ Put `HF_TOKEN` in Space Secrets, not plain Variables.
 
 Deploy to Hugging Face Spaces with:
 ```bash
-openenv push . --repo-id <your-username>/<space-name>
+openenv push . --repo-id Jha-ayush/rl-openenv
 ```
 
 Runtime workspace is created under `workspace/` by default.
@@ -125,11 +106,6 @@ To create a token:
 2. Open `https://huggingface.co/settings/tokens`.
 3. Create a fine-grained token.
 4. Grant permission to make Inference Providers calls.
-
-The default OpenAI-compatible endpoint used by this repo is:
-```text
-https://router.huggingface.co/v1
-```
 
 ## Tasks
 

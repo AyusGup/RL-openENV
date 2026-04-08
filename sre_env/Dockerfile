@@ -26,13 +26,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     OPENENV_REPO_ROOT=/app/sre_env
 
 RUN addgroup --system appgroup \
-    && adduser --system --ingroup appgroup --home /app --no-create-home appuser \
-    && mkdir -p /app/sre_env/workspace
+    && adduser --system --ingroup appgroup --home /app --no-create-home appuser
 
 COPY --from=builder --chown=appuser:appgroup /app/.venv /app/.venv
 COPY --chown=appuser:appgroup . /app/sre_env
 
-RUN chmod +x /app/sre_env/docker-entrypoint.sh
+RUN mkdir -p /app/sre_env/workspace \
+    && chown -R appuser:appgroup /app/sre_env/workspace \
+    && chmod -R u+rwX /app/sre_env/workspace \
+    && chmod +x /app/sre_env/docker-entrypoint.sh
 
 USER appuser
 
