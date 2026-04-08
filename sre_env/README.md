@@ -59,7 +59,7 @@ Python client (typed async):
 ```python
 from sre_env import SREAction, SREEnv
 
-async with SREEnv("http://127.0.0.1:7860") as env:
+async with SREEnv("http://127.0.0.1:7861") as env:
     observation = await env.reset(task_id="task2_retry_logic")
     result = await env.step(SREAction(tool="terminal", command="cat app/retry_handler.py"))
     state = await env.state()
@@ -83,7 +83,7 @@ Start the environment server in one terminal:
 ```bash
 source .venv/bin/activate
 cd ..
-python -m uvicorn sre_env.server.app:app --host 127.0.0.1 --port 7860
+python -m uvicorn sre_env.server.app:app --host 127.0.0.1 --port 7861
 ```
 
 ## Hugging Face Secrets

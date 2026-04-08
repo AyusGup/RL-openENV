@@ -12,7 +12,7 @@ from .models import SREAction, SREObservation, SREState, SREStepResult, TaskSumm
 class SREEnv:
     """Async client wrapper around the SRE OpenEnv endpoints."""
 
-    def __init__(self, base_url: str = "http://127.0.0.1:7860", timeout: float = 60.0):
+    def __init__(self, base_url: str = "http://127.0.0.1:7861", timeout: float = 60.0):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self._client = httpx.AsyncClient(

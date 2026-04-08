@@ -18,7 +18,7 @@ from sre_env import SREAction, SREEnv
 API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
 MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
 API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
-ENV_BASE_URL = os.getenv("OPENENV_BASE_URL") or "http://127.0.0.1:7860"
+ENV_BASE_URL = os.getenv("OPENENV_BASE_URL") or "http://127.0.0.1:7861"
 TASK_NAME = os.getenv("SRE_TASK_NAME") or "task1_wrong_status"
 BENCHMARK = os.getenv("SRE_BENCHMARK") or "sre_env"
 DEFAULT_MAX_STEPS = 8
