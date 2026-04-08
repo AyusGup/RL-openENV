@@ -13,7 +13,7 @@ dependencies = [
     "pydantic>=2.0.0",
     "httpx>=0.24.0",
     "openai>=1.30.0",
-    "openenv-core>=0.1.1",
+    "openenv-core[core]>=0.2.2",
     "pytest>=7.3.0",
     "docker>=6.1.0",
     "ruff>=0.1.0",
@@ -44,7 +44,6 @@ build-backend = "setuptools.build_meta"
 requires = ["setuptools>=61.0"]
 
 [tool.setuptools]
-py-modules = ["client", "models"]
-
-[tool.setuptools.packages.find]
-include = ["providers*", "server*", "tasks*", "utils*"]
+include-package-data = true
+packages = ["sre_env", "sre_env.server", "sre_env.providers", "sre_env.tasks", "sre_env.utils"]
+package-dir = { "sre_env" = ".", "sre_env.server" = "server", "sre_env.providers" = "providers", "sre_env.tasks" = "tasks", "sre_env.utils" = "utils" }

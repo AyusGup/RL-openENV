@@ -1,4 +1,4 @@
-"""LLM-driven inference script for the SRE OpenEnv environment."""
+﻿"""LLM-driven inference script for the SRE OpenEnv environment."""
 
 from __future__ import annotations
 
@@ -391,6 +391,27 @@ def maybe_capture_file_contents(
         known_files[target] = stdout
 
 
+def normalize_step_result(step_result: Any) -> Dict[str, Any]:
+    """Normalize OpenEnv StepResult into the legacy dict shape used below."""
+    observation_obj = step_result.observation
+    if hasattr(observation_obj, "model_dump"):
+        observation = observation_obj.model_dump()
+    else:
+        observation = dict(observation_obj)
+
+    reward_value = float(step_result.reward or 0.0)
+    return {
+        "observation": observation,
+        "reward": {"value": reward_value},
+        "done": bool(step_result.done),
+        "info": {
+            "score": observation.get("score"),
+            "message": observation.get("message", ""),
+            "last_action_error": observation.get("last_action_error"),
+        },
+    }
+
+
 async def main() -> None:
     rewards: List[float] = []
     score = 0.0
@@ -411,27 +432,23 @@ async def main() -> None:
         llm_client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
         # On HF Spaces the env server is already running inside this container
-        # at localhost:7861 (started by docker-entrypoint.sh).  When running
+        # at localhost:8000 (started by docker-entrypoint.sh). When running
         # locally, IMAGE_NAME tells us to spin up a fresh container.
         if IMAGE_NAME:
             env = await SREEnv.from_docker_image(IMAGE_NAME, task_id=TASK_NAME)
         else:
-            env = SREEnv(base_url="http://127.0.0.1:7861")
+            env = SREEnv(base_url="http://127.0.0.1:8000")
         async with env:
-            initial_observation_obj = await env.reset(task_id=TASK_NAME)
+            initial_reset_result = await env.reset(task_id=TASK_NAME)
             state_obj = await env.state()
             state = state_obj.model_dump() if state_obj is not None else None
-            initial_observation = initial_observation_obj.model_dump()
+            initial_observation = initial_reset_result.observation.model_dump()
             if isinstance(state, dict):
                 max_steps = int(state.get("max_steps") or DEFAULT_MAX_STEPS)
             alert_message = str(initial_observation.get("alert_message") or "")
             file_tree = list(initial_observation.get("file_tree") or [])
-            latest_step_result = {
-                "observation": initial_observation,
-                "reward": {"value": 0.0},
-                "done": False,
-                "info": {"score": None, "message": "Episode reset", "last_action_error": None},
-            }
+            latest_step_result = normalize_step_result(initial_reset_result)
+            latest_step_result["info"]["message"] = "Episode reset"
 
             for step in range(1, max_steps + 1):
                 if latest_step_result.get("done"):
@@ -499,7 +516,7 @@ async def main() -> None:
                             )
 
                     latest_step_obj = await env.step(SREAction.model_validate(action))
-                    latest_step_result = latest_step_obj.model_dump()
+                    latest_step_result = normalize_step_result(latest_step_obj)
                     reward = float(latest_step_result["reward"]["value"] or 0.0)
                     rewards.append(reward)
                     steps_taken = step
@@ -582,7 +599,7 @@ async def main() -> None:
             if not latest_step_result.get("done") and not abort_episode:
                 submit_action = {"tool": "submit", "command": "", "file_path": "", "file_content": ""}
                 latest_step_obj = await env.step(SREAction.model_validate(submit_action))
-                latest_step_result = latest_step_obj.model_dump()
+                latest_step_result = normalize_step_result(latest_step_obj)
                 reward = float(latest_step_result["reward"]["value"] or 0.0)
                 rewards.append(reward)
                 steps_taken += 1

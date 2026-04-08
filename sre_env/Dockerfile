@@ -38,9 +38,9 @@ RUN mkdir -p /app/sre_env/workspace \
 
 USER appuser
 
-EXPOSE 7861
+EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:${PORT:-7861}/health')"
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:${PORT:-8000}/health')"
 
 ENTRYPOINT ["/app/sre_env/docker-entrypoint.sh"]

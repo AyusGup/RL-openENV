@@ -2,69 +2,60 @@
 
 import os
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 
-from fastapi import Body, FastAPI, HTTPException
-from pydantic import BaseModel
 import uvicorn
+from fastapi import FastAPI
+from openenv.core.env_server.http_server import create_app
 
-from sre_env.models import SREAction, SREObservation, SREState, SREStepResult, TaskSummary
+from sre_env.models import SREAction, SREObservation, TaskSummary
 from sre_env.server.sre_environment import SREEnvironment
+from sre_env.tasks.registry import TaskRegistry
 
-# Configuration
 PACKAGE_ROOT = Path(os.getenv("OPENENV_REPO_ROOT", Path(__file__).resolve().parents[1]))
 FIXTURES_DIR = Path(os.getenv("OPENENV_FIXTURES_DIR", PACKAGE_ROOT / "fixtures"))
 WORKSPACE_ROOT = Path(os.getenv("OPENENV_WORKSPACE_ROOT", PACKAGE_ROOT / "workspace"))
-PORT = int(os.getenv("PORT", 7861))
-
-app = FastAPI(title="SRE Incident Response OpenEnv")
-
-# Initialize environment
-env = SREEnvironment(FIXTURES_DIR, WORKSPACE_ROOT)
-
-class ResetRequest(BaseModel):
-    task_id: Optional[str] = None
-
-@app.get("/")
-async def root():
-    return {"message": "SRE Incident Response Environment is running."}
-
-@app.get("/health")
-async def health():
-    """Container health probe endpoint."""
-    return {"status": "healthy"}
-
-@app.get("/tasks", response_model=List[TaskSummary])
-async def list_tasks():
-    """List all available incident scenarios."""
-    return env.registry.list_summaries()
-
-@app.post("/reset", response_model=SREObservation)
-async def reset(request: ResetRequest = Body(default_factory=ResetRequest)):
-    """Start a new incident response episode."""
-    task_id = request.task_id or env.registry.default_task_id()
-    observation = await env.reset(task_id)
-    if observation.stderr.startswith("Error:"):
-        raise HTTPException(status_code=400, detail=observation.stderr)
-    return observation
-
-@app.post("/step", response_model=SREStepResult)
-async def step(action: SREAction):
-    """Execute an agent action."""
-    result = await env.step(action)
-    if result.observation.stderr.startswith("Error:") and not result.done:
-        raise HTTPException(status_code=400, detail=result.observation.stderr)
-    return result
-
-@app.get("/state", response_model=Optional[SREState])
-async def get_state():
-    """Get the current episode state."""
-    return env.state
+DEFAULT_TASK_ID = os.getenv("SRE_TASK_NAME")
+PORT = int(os.getenv("PORT", 8000))
 
 
-def main() -> None:
-    """Run the FastAPI app with Uvicorn."""
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
+def create_sre_app(
+    fixtures_dir: Path,
+    workspace_root: Path,
+    default_task_id: str | None = None,
+) -> FastAPI:
+    """Create a template-style OpenEnv app and attach `/tasks` extension route."""
+
+    def env_factory() -> SREEnvironment:
+        return SREEnvironment(
+            fixtures_dir=fixtures_dir,
+            workspace_root=workspace_root,
+            default_task_id=default_task_id,
+        )
+
+    app = create_app(
+        env_factory,
+        SREAction,
+        SREObservation,
+        env_name="sre_env",
+        max_concurrent_envs=1,
+    )
+
+    registry = TaskRegistry(fixtures_dir)
+
+    @app.get("/tasks", response_model=List[TaskSummary], tags=["Environment Info"])
+    async def list_tasks() -> List[TaskSummary]:
+        return registry.list_summaries()
+
+    return app
+
+
+app = create_sre_app(FIXTURES_DIR, WORKSPACE_ROOT, DEFAULT_TASK_ID)
+
+
+def main(host: str = "0.0.0.0", port: int = PORT) -> None:
+    """Run the SRE server with Uvicorn."""
+    uvicorn.run(app, host=host, port=port)
 
 
 if __name__ == "__main__":

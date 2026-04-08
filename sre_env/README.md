@@ -1,10 +1,10 @@
----
+﻿---
 title: SRE Incident Response OpenEnv
-emoji: "🛠️"
+emoji: "ðŸ› ï¸"
 colorFrom: blue
 colorTo: green
 sdk: docker
-app_port: 7861
+app_port: 8000
 pinned: false
 ---
 
@@ -60,7 +60,7 @@ Python client (typed async):
 ```python
 from sre_env import SREAction, SREEnv
 
-async with SREEnv("http://127.0.0.1:7861") as env:
+async with SREEnv("http://127.0.0.1:8000") as env:
     observation = await env.reset(task_id="task2_retry_logic")
     result = await env.step(SREAction(tool="terminal", command="cat app/retry_handler.py"))
     state = await env.state()
@@ -84,7 +84,7 @@ Start the environment server in one terminal:
 ```bash
 source .venv/bin/activate
 cd ..
-python -m uvicorn sre_env.server.app:app --host 127.0.0.1 --port 7861
+python -m uvicorn sre_env.server.app:app --host 127.0.0.1 --port 8000
 ```
 
 ## Hugging Face Secrets
@@ -94,8 +94,8 @@ For Hugging Face Spaces, add these in your Space settings:
 - `HF_TOKEN`
 
 Port configuration:
-- Space metadata `app_port` is set to `7861` in this README front matter.
-- Runtime uses `PORT` when provided by the platform; otherwise the app defaults to `7861`.
+- Space metadata `app_port` is set to `8000` in this README front matter.
+- Runtime uses `PORT` when provided by the platform; otherwise the app defaults to `8000`.
 
 Put `HF_TOKEN` in Space Secrets, not plain Variables.
 

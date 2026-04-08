@@ -17,7 +17,7 @@ def test_grader_scores_fixed_workspace_in_range(tmp_path: Path) -> None:
     task = registry.get_task("task1_wrong_status")
 
     assert task is not None
-    asyncio.run(env.reset(task.id))
+    asyncio.run(env.reset_async(task_id=task.id))
 
     target_file = workspace_root / "app" / "main.py"
     original = target_file.read_text(encoding="utf-8")
@@ -64,7 +64,7 @@ def test_grader_counts_expected_new_file_creation(tmp_path: Path) -> None:
     task = registry.get_task("task2_retry_logic")
 
     assert task is not None
-    asyncio.run(env.reset(task.id))
+    asyncio.run(env.reset_async(task_id=task.id))
 
     retry_handler = workspace_root / "app" / "retry_handler.py"
     retry_handler.write_text(
@@ -94,7 +94,7 @@ def test_grader_runs_hidden_fixture_tests_for_task2(tmp_path: Path) -> None:
     task = registry.get_task("task2_retry_logic")
 
     assert task is not None
-    asyncio.run(env.reset(task.id))
+    asyncio.run(env.reset_async(task_id=task.id))
     assert not (workspace_root / "tests").exists()
 
     retry_handler = workspace_root / "app" / "retry_handler.py"
@@ -113,4 +113,3 @@ def test_grader_runs_hidden_fixture_tests_for_task2(tmp_path: Path) -> None:
         SREGrader()._check_tests(task.id, fixtures_dir / task.id, workspace_root)
     )
     assert test_score == 1.0
-
