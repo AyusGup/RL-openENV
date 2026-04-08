@@ -46,6 +46,25 @@ def test_port_file_round_trip(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None
     assert port_resolver.read_selected_port() == 8123
 
 
+def test_port_file_path_prefers_openenv_repo_root(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    monkeypatch.delenv("OPENENV_PORT_FILE", raising=False)
+    monkeypatch.setenv("OPENENV_REPO_ROOT", str(tmp_path))
+
+    assert port_resolver.port_file_path() == tmp_path / ".openenv_port"
+
+
+def test_write_selected_port_permission_error_does_not_raise(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    port_dir = tmp_path / ".openenv_port"
+    port_dir.mkdir()
+    monkeypatch.setenv("OPENENV_PORT_FILE", str(port_dir))
+
+    port_resolver.write_selected_port(8123)
+    captured = capsys.readouterr()
+    assert "[OPENENV][WARN] Failed to write port file" in captured.out
+
+
 def test_client_base_url_priority_explicit_over_env_and_file(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:

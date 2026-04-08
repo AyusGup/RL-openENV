@@ -62,3 +62,26 @@ def test_main_honors_explicit_port_env(
     assert captured["host"] == "127.0.0.1"
     assert captured["port"] == 8899
     assert int(port_file.read_text(encoding="utf-8").strip()) == 8899
+
+
+def test_main_continues_when_port_file_write_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    captured: dict[str, int | str] = {}
+    port_dir = tmp_path / ".openenv_port"
+    port_dir.mkdir()
+    monkeypatch.setenv("OPENENV_PORT_FILE", str(port_dir))
+    monkeypatch.setenv("HOST", "127.0.0.1")
+    monkeypatch.setenv("PORT", "7860")
+
+    def fake_uvicorn_run(_app, host: str, port: int) -> None:
+        captured["host"] = host
+        captured["port"] = port
+
+    monkeypatch.setattr(app_module.uvicorn, "run", fake_uvicorn_run)
+    app_module.main()
+    out = capsys.readouterr().out
+
+    assert "[OPENENV][WARN] Failed to write port file" in out
+    assert captured["host"] == "127.0.0.1"
+    assert captured["port"] == 7860

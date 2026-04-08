@@ -23,6 +23,9 @@ def port_file_path() -> Path:
     override = os.getenv("OPENENV_PORT_FILE")
     if override:
         return Path(override)
+    repo_root_override = os.getenv("OPENENV_REPO_ROOT")
+    if repo_root_override:
+        return Path(repo_root_override) / PORT_FILE_NAME
     return repo_root() / PORT_FILE_NAME
 
 
@@ -78,8 +81,11 @@ def resolve_server_port(
 def write_selected_port(port: int) -> None:
     """Persist selected server port for local client auto-discovery."""
     path = port_file_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(str(port), encoding="utf-8")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(str(port), encoding="utf-8")
+    except OSError as exc:
+        print(f"[OPENENV][WARN] Failed to write port file at {path}: {exc}", flush=True)
 
 
 def read_selected_port() -> Optional[int]:
