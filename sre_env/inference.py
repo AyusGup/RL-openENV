@@ -112,11 +112,6 @@ def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> No
     )
 
 
-def log_error(stage: str, error: str) -> None:
-    """Emit a compact single-line error log."""
-    print(f"[ERROR] stage={stage} error={sanitize_log_value(error)}", flush=True, file=sys.stderr)
-
-
 def sanitize_log_value(value: str) -> str:
     """Keep log fields single-line and compact."""
     compact = value.replace("\r", "\\r").replace("\n", "\\n")
@@ -531,8 +526,14 @@ async def main() -> None:
                 except Exception as exc:
                     if isinstance(exc, httpx.HTTPStatusError):
                         detail = extract_http_error_detail(exc)
-                        log_error("step_http", f"{exc}; detail={detail}")
                         steps_taken = step
+                        log_step(
+                            step=step,
+                            action=sanitize_action_for_log(action),
+                            reward=0.0,
+                            done=False,
+                            error=detail,
+                        )
                         latest_step_result = {
                             "observation": {
                                 "stdout": "",
@@ -561,7 +562,13 @@ async def main() -> None:
                         )
                         continue
 
-                    log_error("step", str(exc))
+                    log_step(
+                        step=step,
+                        action=sanitize_action_for_log(action),
+                        reward=0.0,
+                        done=False,
+                        error=str(exc),
+                    )
                     abort_episode = True
                     break
 
@@ -585,8 +592,21 @@ async def main() -> None:
     except Exception as exc:
         success = False
         score = 0.0
-        log_error("runtime", str(exc))
+        log_step(
+            step=steps_taken,
+            action="startup",
+            reward=0.0,
+            done=False,
+            error=str(exc),
+        )
         if steps_taken == 0:
+            log_step(
+                step=steps_taken,
+                action="startup",
+                reward=0.0,
+                done=False,
+                error=str(exc),
+            )
             history.append(
                 {
                     "action": "startup",
