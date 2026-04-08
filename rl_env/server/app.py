@@ -38,7 +38,7 @@ except Exception as e:  # pragma: no cover
 try:
     from ..models import RlAction, RlObservation
     from .rl_env_environment import RlEnvironment
-except ModuleNotFoundError:
+except ImportError:
     from models import RlAction, RlObservation
     from server.rl_env_environment import RlEnvironment
 
