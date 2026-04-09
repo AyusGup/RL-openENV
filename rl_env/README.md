@@ -57,6 +57,9 @@ Runtime behavior notes:
 - For RCA-required tasks, inference policy prefers: code edit -> RCA -> replay -> submit.
 - Inference caps replay spam to at most 2 consecutive replay actions without an intervening code edit.
 - Inference will force a final submit if the loop exits without `done=true`.
+- If LLM credits are exhausted mid-episode (provider `402`), inference degrades gracefully:
+  - after at least one code edit: fallback to replay-first flow,
+  - before any code edit: fallback to submit (no synthetic/hardcoded file content is injected).
 
 Scoring notes:
 - Final task score is computed by the server grader on submit/auto-grade.
@@ -64,6 +67,7 @@ Scoring notes:
 - `tests_pass` is continuous (`passed / total`) when pytest summaries are parseable.
 - Grader test subprocess timeout is `120s` (to reduce false failures on slower filesystems).
 - Server grading remains raw in `[0, 1]`; inference normalizes emitted task scores into strict `(0, 1)` for evaluator compatibility.
+- Step-level reward shaping is conservative (`base_step_penalty=-0.005`) and discourages no-op loops (duplicate cat/replay spam).
 
 ## Repository Layout
 - `openenv.yaml`: OpenEnv manifest used by `openenv validate` and `openenv push`.
@@ -145,11 +149,15 @@ The item-creation flow violates its API contract. The agent must inspect logs an
 Difficulty: medium
 
 The upstream retry handler gives up one attempt too early. The agent must inspect logs, patch the retry loop, verify the fix, and write an `RCA.md`.
+RCA grading includes a semantic alignment check in `Fix Applied` for the actual loop-boundary fix (e.g. `max_retries + 1`).
 
 ### Task 3: Cascading Timeout Failure
 Difficulty: hard
 
 Service A times out before Service B can complete a slower enrichment path. The agent must inspect logs across both services, adjust the caller timeout, improve Service B latency, verify the tests, and write an `RCA.md`.
+RCA grading expects `Fix Applied` to cover both sides of the remediation:
+- Service A timeout/deadline adjustment.
+- Service B/database latency-side improvement.
 
 ## License
 MIT
