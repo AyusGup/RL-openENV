@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from sre_env.providers.sandbox_executor import SandboxExecutor
+from rl_env.providers.sandbox_executor import SandboxExecutor
 
 
 def test_sandbox_executor_reads_workspace_file(tmp_path: Path) -> None:

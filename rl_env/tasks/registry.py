@@ -3,8 +3,12 @@
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from sre_env.models import TaskSummary
-from sre_env.tasks.config import TaskConfig
+try:
+    from ..models import TaskSummary
+    from .config import TaskConfig
+except ImportError:
+    from models import TaskSummary
+    from tasks.config import TaskConfig
 
 
 class TaskRegistry:

@@ -4,6 +4,7 @@ emoji: "🛠️"
 colorFrom: blue
 colorTo: green
 sdk: docker
+app_port: 8000
 pinned: false
 ---
 
@@ -15,7 +16,8 @@ An OpenEnv-style environment for evaluating agents on realistic SRE incident-res
 - **Three-task benchmark**: Easy, medium, and hard incident scenarios with distinct failure modes.
 - **Action Space**: Simple `terminal`, `editor`, `replay`, and `submit` tools.
 - **Provider Pattern**: Swappable data sources for logs, metrics, and execution.
-- **Deterministic Grading**: Using `difflib`, `pytest` exit codes, and regex-based RCA scoring.
+- **Deterministic Grading**: Weighted `file_change`, continuous `tests_pass`, and `regex_match` scoring.
+- **Structured Inference Loop**: Built-in guards to reduce replay/cat spam and auto-submit once criteria are met.
 
 ## Motivation
 This environment models a real operational workflow humans perform during incident response: inspect alerts, read logs, inspect source, apply a fix, run verification, and submit a resolution. The tasks progress from a simple API contract bug to retry logic drift and finally a multi-service timeout incident with an RCA requirement.
@@ -50,6 +52,19 @@ State model:
 - `done`
 - `workspace_root`
 
+Runtime behavior notes:
+- `done=true` is returned when the agent submits or when server step budget is exhausted (auto-grade path).
+- For RCA-required tasks, inference policy prefers: code edit -> RCA -> replay -> submit.
+- Inference caps replay spam to at most 2 consecutive replay actions without an intervening code edit.
+- Inference will force a final submit if the loop exits without `done=true`.
+
+Scoring notes:
+- Final task score is computed by the server grader on submit/auto-grade.
+- Grader also returns per-component scores in step metadata: `file_change`, `tests_pass`, `regex_match`.
+- `tests_pass` is continuous (`passed / total`) when pytest summaries are parseable.
+- Grader test subprocess timeout is `120s` (to reduce false failures on slower filesystems).
+- Server grading remains raw in `[0, 1]`; inference normalizes emitted task scores into strict `(0, 1)` for evaluator compatibility.
+
 ## Repository Layout
 - `openenv.yaml`: OpenEnv manifest used by `openenv validate` and `openenv push`.
 - `fixtures/`: task fixtures, hidden tests, and replay assets.
@@ -57,16 +72,16 @@ State model:
 
 Python client (typed async):
 ```python
-from sre_env import SREAction, SREEnv
+from rl_env import SREAction, SREEnv
 
-async with SREEnv("http://127.0.0.1:7860") as env:
+async with SREEnv("http://127.0.0.1:8000") as env:
     observation = await env.reset(task_id="task2_retry_logic")
     result = await env.step(SREAction(tool="terminal", command="cat app/retry_handler.py"))
     state = await env.state()
 ```
 
 ## Linux Setup
-From this directory (`sre_env`), create a virtual environment and install dependencies:
+From this directory (`rl_env`), create a virtual environment and install dependencies:
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
@@ -83,14 +98,26 @@ Start the environment server in one terminal:
 ```bash
 source .venv/bin/activate
 cd ..
-python -m uvicorn sre_env.server.app:app --host 127.0.0.1 --port 7860
+python -m uvicorn server.app:app --host 0.0.0.0 --port 8000
 ```
+
+## Inference Runtime Knobs
+Key environment variables used by `inference.py`:
+- `MAX_STEPS` (default `20`)
+- `SUCCESS_SCORE_THRESHOLD` (default `0.5`)
+- `HTTP_TIMEOUT_SECONDS` (default `180`)
+- `SCORE_EPSILON` (default `1e-6`)
+- `ENABLE_GRADE_BREAKDOWN_LOGS` (default `0`; set `1` to enable per-component `[GRADE]` logs)
 
 ## Hugging Face Secrets
 For Hugging Face Spaces, add these in your Space settings:
 - `API_BASE_URL`
 - `MODEL_NAME`
 - `HF_TOKEN`
+
+Port configuration:
+- Space metadata `app_port` is set to `8000` in this README front matter.
+- Runtime uses `PORT` when provided by the platform; otherwise the app defaults to `8000`.
 
 Put `HF_TOKEN` in Space Secrets, not plain Variables.
 
