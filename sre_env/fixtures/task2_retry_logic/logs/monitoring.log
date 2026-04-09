@@ -1,3 +1,0 @@
-2026-03-25 09:16:00 ALERT [slo] Elevated upstream failure rate observed on /api/upstream/health
-2026-03-25 09:16:00 WARN  [monitoring] Upstream health-check failure rate exceeded threshold
-2026-03-25 09:16:05 INFO  [monitoring] Upstream dependency recovered after alert fired

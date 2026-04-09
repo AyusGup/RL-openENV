@@ -1,4 +1,0 @@
-2026-03-25 03:12:01 ERROR [httpx] ReadTimeout: timed out after 0.1s waiting for service-b
-2026-03-25 03:12:01 ERROR [main] call_service_b failed: ReadTimeout
-2026-03-25 03:12:02 ERROR [httpx] ReadTimeout: timed out after 0.1s waiting for service-b
-2026-03-25 03:12:05 CRITICAL [circuit_breaker] Service B marked UNHEALTHY - 5 consecutive failures

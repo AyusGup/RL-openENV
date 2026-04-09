@@ -1,3 +1,0 @@
-2026-03-25 14:32:01 WARN  [api-gateway] POST /api/items responded with status=200 duration_ms=34
-2026-03-25 14:32:01 ERROR [client-sdk] Unexpected response status=200 on POST /api/items, aborting item creation flow
-2026-03-25 14:32:02 WARN  [monitoring] Alert triggered: elevated client abort rate on /api/items

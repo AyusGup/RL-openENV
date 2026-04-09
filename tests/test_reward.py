@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from sre_env.models import SREAction, SREObservation
-from sre_env.server.reward import SREStepRewarder
+from rl_env.models import SREAction, SREObservation
+from rl_env.server.reward import SREStepRewarder
 
 
 def test_rewarder_does_not_reward_fake_source_file_created_after_reset() -> None:
@@ -19,7 +19,7 @@ def test_rewarder_does_not_reward_fake_source_file_created_after_reset() -> None
     assert reward == -0.01
 
 
-def test_rewarder_gives_small_replay_reward_and_bonus_on_success() -> None:
+def test_rewarder_replay_pre_edit_is_not_rewarded() -> None:
     rewarder = SREStepRewarder()
     rewarder.seed_initial_files(["app/main.py", "logs/error.log"])
 
@@ -29,12 +29,18 @@ def test_rewarder_gives_small_replay_reward_and_bonus_on_success() -> None:
         expected_fix_files=["app/main.py"],
     )
 
-    assert reward == 0.02
+    assert reward == -0.01
 
 
-def test_rewarder_penalizes_duplicate_replay() -> None:
+def test_rewarder_penalizes_duplicate_replay_without_new_edit() -> None:
     rewarder = SREStepRewarder()
     rewarder.seed_initial_files(["app/main.py"])
+
+    rewarder.calculate_reward(
+        SREAction(tool="editor", file_path="app/main.py", file_content="print('v2')\n"),
+        SREObservation(stdout="", exit_code=0),
+        expected_fix_files=["app/main.py"],
+    )
 
     first = rewarder.calculate_reward(
         SREAction(tool="replay", command="retry_health_contract"),
@@ -47,7 +53,7 @@ def test_rewarder_penalizes_duplicate_replay() -> None:
         expected_fix_files=["app/main.py"],
     )
 
-    assert first == 0.01
+    assert first == 0.0
     assert second == -0.02
 
 
