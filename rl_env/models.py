@@ -55,6 +55,10 @@ class SREStepInfo(BaseModel):
     last_action_error: Optional[str] = Field(
         default=None, description="Error message from the last action, if any"
     )
+    grading_breakdown: Optional[dict[str, float]] = Field(
+        default=None,
+        description="Per-component grading scores for completed episodes",
+    )
 
 
 class SREStepResult(BaseModel):

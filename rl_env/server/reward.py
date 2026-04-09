@@ -21,7 +21,9 @@ class SREStepRewarder:
         self.last_cat_stdout_by_target: dict[str, str] = {}
         self.has_relevant_code_edit: bool = False
         self.edit_since_last_replay: bool = False
+        self.replay_success_since_last_edit: bool = False
         self.last_replay_name: str | None = None
+        self.base_step_penalty: float = -0.005
 
     def calculate_reward(
         self,
@@ -34,7 +36,7 @@ class SREStepRewarder:
         The final task score should remain the dominant signal. Step rewards are
         intentionally small and task-aware to discourage reward hacking.
         """
-        reward = -0.01
+        reward = self.base_step_penalty
         expected_files = {path.replace("\\", "/") for path in expected_fix_files}
 
         if action.tool == "terminal":
@@ -51,7 +53,7 @@ class SREStepRewarder:
                 target = cmd.split("cat ", maxsplit=1)[-1].strip().replace("\\", "/")
                 previous_stdout = self.last_cat_stdout_by_target.get(target)
                 if previous_stdout is not None and previous_stdout == observation.stdout:
-                    reward -= 0.02
+                    reward -= 0.01
                 self.last_cat_stdout_by_target[target] = observation.stdout
                 if target.startswith("logs/") and target.endswith(".log") and target not in self.seen_logs:
                     reward += 0.05
@@ -86,6 +88,7 @@ class SREStepRewarder:
             ):
                 self.has_relevant_code_edit = True
                 self.edit_since_last_replay = True
+                self.replay_success_since_last_edit = False
             # Allow one immediate validation read after edits.
             self.last_cat_stdout_by_target.pop(normalized_path, None)
 
@@ -93,13 +96,18 @@ class SREStepRewarder:
             replay_name = " ".join(action.command.lower().split())
             if self.has_relevant_code_edit and replay_name:
                 # Reward verification usage after real code progress.
-                if replay_name != self.last_replay_name:
+                if self.edit_since_last_replay and replay_name != self.last_replay_name:
                     reward += 0.01
                 # Penalize only unchanged, consecutive duplicate replays.
                 if replay_name == self.last_replay_name and not self.edit_since_last_replay:
                     reward -= 0.01
-            if self.has_relevant_code_edit and "contract_ok=true" in observation.stdout.lower():
+            if (
+                self.has_relevant_code_edit
+                and "contract_ok=true" in observation.stdout.lower()
+                and not self.replay_success_since_last_edit
+            ):
                 reward += 0.02
+                self.replay_success_since_last_edit = True
             self.last_replay_name = replay_name or None
             self.edit_since_last_replay = False
 

@@ -5,7 +5,7 @@ import os
 import re
 import subprocess
 from pathlib import Path
-from typing import List
+from typing import Dict, List
 
 try:
     from ..providers.sandbox_executor import SandboxExecutor
@@ -34,25 +34,36 @@ class SREGrader:
         Returns:
             float: Total score (0.0 - 1.0).
         """
-        weights = task_config.grading_weights
-        total_score = 0.0
+        result = await self.grade_episode_with_breakdown(task_config, fixture_path, workspace_path)
+        return float(result["total_score"])
 
-        # 1. File Change Scoring (Diff original fixture vs workspace)
+    async def grade_episode_with_breakdown(
+        self,
+        task_config: TaskConfig,
+        fixture_path: Path,
+        workspace_path: Path,
+    ) -> Dict[str, float]:
+        """Evaluate workspace and return normalized total + per-component breakdown."""
+        weights = task_config.grading_weights
+
         file_change_score = self._check_file_changes(
             task_config.expected_fix_files, fixture_path, workspace_path
         )
-        total_score += file_change_score * weights.get("file_change", 0.0)
-
-        # 2. Test Success Scoring (Run pytest)
         test_score = await self._check_tests(task_config.id, fixture_path, workspace_path)
-        total_score += test_score * weights.get("tests_pass", 0.0)
-
-        # 3. Correctness Scoring (Regex match in source code)
         regex_score = self._check_regex(task_config.regex_checks, workspace_path)
-        total_score += regex_score * weights.get("regex_match", 0.0)
 
-        # Normalize to 0.0-1.0
-        return max(0.0, min(1.0, total_score))
+        weighted = (
+            file_change_score * weights.get("file_change", 0.0)
+            + test_score * weights.get("tests_pass", 0.0)
+            + regex_score * weights.get("regex_match", 0.0)
+        )
+        total_score = max(0.0, min(1.0, weighted))
+        return {
+            "total_score": total_score,
+            "file_change": file_change_score,
+            "tests_pass": test_score,
+            "regex_match": regex_score,
+        }
 
     def _check_file_changes(
         self, expected_files: List[str], fixture_path: Path, workspace_path: Path
@@ -115,8 +126,32 @@ class SREGrader:
             )
         except Exception:
             return 0.0
-
+        summary_text = f"{completed.stdout}\n{completed.stderr}"
+        passed, failed, errors = self._extract_pytest_counts(summary_text)
+        denominator = passed + failed + errors
+        if denominator > 0:
+            return passed / denominator
         return 1.0 if completed.returncode == 0 else 0.0
+
+    def _extract_pytest_counts(self, output: str) -> tuple[int, int, int]:
+        """Parse pytest summary counts from output text."""
+        passed = 0
+        failed = 0
+        errors = 0
+        for count_str, label in re.findall(
+            r"(\d+)\s+(passed|failed|error|errors|xpassed|xfailed|skipped)",
+            output,
+            flags=re.IGNORECASE,
+        ):
+            count = int(count_str)
+            key = label.lower()
+            if key in {"passed", "xpassed"}:
+                passed += count
+            elif key == "failed":
+                failed += count
+            elif key in {"error", "errors"}:
+                errors += count
+        return passed, failed, errors
 
     def _check_regex(self, checks: List[RegexCheck], workspace_path: Path) -> float:
         """Verify the logic of the fix using regex."""

@@ -39,6 +39,16 @@
     },
     {
       "file": "RCA.md",
+      "pattern": "(?is)##\\s+Fix Applied[\\s\\S]*(timeout|deadline)[\\s\\S]*(service_a|service\\s*a|caller)",
+      "message": "Fix Applied should describe the Service A timeout/deadline change."
+    },
+    {
+      "file": "RCA.md",
+      "pattern": "(?is)##\\s+Fix Applied[\\s\\S]*(service_b|service\\s*b|database|query|latency|slow)",
+      "message": "Fix Applied should describe the Service B/database latency improvement."
+    },
+    {
+      "file": "RCA.md",
       "pattern": "##\\s+Prevention",
       "message": "RCA.md must include a Prevention section."
     }

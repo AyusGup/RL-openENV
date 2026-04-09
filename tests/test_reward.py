@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from rl_env.models import SREAction, SREObservation
 from rl_env.server.reward import SREStepRewarder
 
@@ -16,7 +18,7 @@ def test_rewarder_does_not_reward_fake_source_file_created_after_reset() -> None
         expected_fix_files=["app/main.py"],
     )
 
-    assert reward == -0.01
+    assert reward == -0.005
 
 
 def test_rewarder_replay_pre_edit_is_not_rewarded() -> None:
@@ -29,7 +31,7 @@ def test_rewarder_replay_pre_edit_is_not_rewarded() -> None:
         expected_fix_files=["app/main.py"],
     )
 
-    assert reward == -0.01
+    assert reward == -0.005
 
 
 def test_rewarder_penalizes_duplicate_replay_without_new_edit() -> None:
@@ -53,8 +55,33 @@ def test_rewarder_penalizes_duplicate_replay_without_new_edit() -> None:
         expected_fix_files=["app/main.py"],
     )
 
-    assert first == 0.0
-    assert second == -0.02
+    assert first == 0.005
+    assert second == -0.015
+
+
+def test_rewarder_replay_success_bonus_is_not_repeatable_without_new_edit() -> None:
+    rewarder = SREStepRewarder()
+    rewarder.seed_initial_files(["app/main.py"])
+
+    rewarder.calculate_reward(
+        SREAction(tool="editor", file_path="app/main.py", file_content="print('v2')\n"),
+        SREObservation(stdout="", exit_code=0),
+        expected_fix_files=["app/main.py"],
+    )
+
+    first_success = rewarder.calculate_reward(
+        SREAction(tool="replay", command="retry_health_contract"),
+        SREObservation(stdout="contract_ok=true\n", exit_code=0),
+        expected_fix_files=["app/main.py"],
+    )
+    second_success = rewarder.calculate_reward(
+        SREAction(tool="replay", command="retry_health_contract"),
+        SREObservation(stdout="contract_ok=true\n", exit_code=0),
+        expected_fix_files=["app/main.py"],
+    )
+
+    assert first_success == pytest.approx(0.025)
+    assert second_success == -0.015
 
 
 def test_rewarder_rewards_rca_when_expected_fix_file() -> None:
@@ -95,8 +122,8 @@ def test_rewarder_penalizes_duplicate_cat_only_when_output_unchanged() -> None:
         expected_fix_files=["app/main.py"],
     )
 
-    assert first == 0.04
-    assert second == -0.03
+    assert first == pytest.approx(0.045)
+    assert second == -0.015
 
 
 def test_rewarder_allows_post_edit_cat_without_duplicate_penalty() -> None:
@@ -119,4 +146,5 @@ def test_rewarder_allows_post_edit_cat_without_duplicate_penalty() -> None:
         expected_fix_files=["app/main.py"],
     )
 
-    assert after_edit == -0.01
+    assert after_edit == -0.005
+

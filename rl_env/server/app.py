@@ -107,6 +107,7 @@ def reset(request: ResetRequest = Body(default_factory=ResetRequest)):
             score=metadata.get("score"),
             message=metadata.get("message", f"Episode reset for task_id={task_id}"),
             last_action_error=metadata.get("last_action_error"),
+            grading_breakdown=metadata.get("grading_breakdown"),
         ),
     )
 
@@ -126,6 +127,7 @@ def step(action: SREAction):
             score=metadata.get("score"),
             message=metadata.get("message", ""),
             last_action_error=metadata.get("last_action_error"),
+            grading_breakdown=metadata.get("grading_breakdown"),
         ),
     )
 

@@ -16,7 +16,7 @@ An OpenEnv-style environment for evaluating agents on realistic SRE incident-res
 - **Three-task benchmark**: Easy, medium, and hard incident scenarios with distinct failure modes.
 - **Action Space**: Simple `terminal`, `editor`, `replay`, and `submit` tools.
 - **Provider Pattern**: Swappable data sources for logs, metrics, and execution.
-- **Deterministic Grading**: Using `difflib`, `pytest` exit codes, and regex-based RCA scoring.
+- **Deterministic Grading**: Weighted `file_change`, continuous `tests_pass`, and `regex_match` scoring.
 - **Structured Inference Loop**: Built-in guards to reduce replay/cat spam and auto-submit once criteria are met.
 
 ## Motivation
@@ -60,8 +60,10 @@ Runtime behavior notes:
 
 Scoring notes:
 - Final task score is computed by the server grader on submit/auto-grade.
+- Grader also returns per-component scores in step metadata: `file_change`, `tests_pass`, `regex_match`.
+- `tests_pass` is continuous (`passed / total`) when pytest summaries are parseable.
 - Grader test subprocess timeout is `120s` (to reduce false failures on slower filesystems).
-- Inference normalizes emitted task scores into strict `(0, 1)` for evaluator compatibility.
+- Server grading remains raw in `[0, 1]`; inference normalizes emitted task scores into strict `(0, 1)` for evaluator compatibility.
 
 ## Repository Layout
 - `openenv.yaml`: OpenEnv manifest used by `openenv validate` and `openenv push`.
@@ -70,7 +72,7 @@ Scoring notes:
 
 Python client (typed async):
 ```python
-from sre_env import SREAction, SREEnv
+from rl_env import SREAction, SREEnv
 
 async with SREEnv("http://127.0.0.1:8000") as env:
     observation = await env.reset(task_id="task2_retry_logic")
@@ -105,6 +107,7 @@ Key environment variables used by `inference.py`:
 - `SUCCESS_SCORE_THRESHOLD` (default `0.5`)
 - `HTTP_TIMEOUT_SECONDS` (default `180`)
 - `SCORE_EPSILON` (default `1e-6`)
+- `ENABLE_GRADE_BREAKDOWN_LOGS` (default `0`; set `1` to enable per-component `[GRADE]` logs)
 
 ## Hugging Face Secrets
 For Hugging Face Spaces, add these in your Space settings:

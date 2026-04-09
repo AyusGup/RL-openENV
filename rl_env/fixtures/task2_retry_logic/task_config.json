@@ -30,6 +30,11 @@
       "file": "RCA.md",
       "pattern": "##\\s+Fix Applied",
       "message": "RCA.md must include a Fix Applied section."
+    },
+    {
+      "file": "RCA.md",
+      "pattern": "(?is)##\\s+Fix Applied[\\s\\S]*(range\\s*\\(\\s*max_retries\\s*\\+\\s*1\\s*\\)|max_retries\\s*\\+\\s*1)",
+      "message": "Fix Applied must describe the loop-boundary fix (`max_retries + 1`)."
     }
   ]
 }

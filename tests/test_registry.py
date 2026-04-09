@@ -74,7 +74,11 @@ def test_grader_counts_expected_new_file_creation(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     (workspace_root / "RCA.md").write_text(
-        "# Incident RCA Report\n\n## Root Cause\nretry loop\n\n## Fix Applied\nupdated retries\n",
+        (
+            "# Incident RCA Report\n\n"
+            "## Root Cause\nretry loop boundary mismatch\n\n"
+            "## Fix Applied\nupdated loop to `range(max_retries + 1)` in retry_handler.\n"
+        ),
         encoding="utf-8",
     )
 
@@ -105,7 +109,11 @@ def test_grader_runs_hidden_fixture_tests_for_task2(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     (workspace_root / "RCA.md").write_text(
-        "# Incident RCA Report\n\n## Root Cause\nretry loop\n\n## Fix Applied\nupdated retries\n",
+        (
+            "# Incident RCA Report\n\n"
+            "## Root Cause\nretry loop boundary mismatch\n\n"
+            "## Fix Applied\nupdated loop to `range(max_retries + 1)` in retry_handler.\n"
+        ),
         encoding="utf-8",
     )
 

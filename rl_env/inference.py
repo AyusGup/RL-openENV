@@ -41,6 +41,12 @@ MODEL_NAME   = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
 BENCHMARK    = os.getenv("BENCHMARK", "rl_env")
 LOCAL_BASE_URL = os.getenv("EVAL_BASE_URL", "http://127.0.0.1:8000")
 HTTP_TIMEOUT_SECONDS = float(os.getenv("HTTP_TIMEOUT_SECONDS", "180"))
+ENABLE_GRADE_BREAKDOWN_LOGS = os.getenv("ENABLE_GRADE_BREAKDOWN_LOGS", "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 MAX_STEPS               = int(os.getenv("MAX_STEPS", "20"))
 SUCCESS_SCORE_THRESHOLD = float(os.getenv("SUCCESS_SCORE_THRESHOLD", "0.5"))
@@ -86,6 +92,7 @@ Rules:
 - Do not repeat `cat` on the same file unless that file was edited since your last read.
 - Treat RCA.md as a final incident document: investigate first, fix the code, verify with replay, then write RCA.
 - Create RCA.md before submit with headings: Root Cause, Affected Services, Fix Applied, Prevention.
+- In "Fix Applied", describe the exact code-level change using literal identifiers/expressions from edited source files.
 - After replay confirms success and RCA.md exists, submit immediately.
 - Keep RCA language concise, factual, and non-speculative.
 - Submit once the fix is verified or when more probing is unlikely to help.
@@ -258,6 +265,16 @@ def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> No
     )
 
 
+def log_grade_breakdown(breakdown: Dict[str, float]) -> None:
+    print(
+        "[GRADE] "
+        f"file_change={breakdown.get('file_change', 0.0):.3f} "
+        f"tests_pass={breakdown.get('tests_pass', 0.0):.3f} "
+        f"regex_match={breakdown.get('regex_match', 0.0):.3f}",
+        flush=True,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Utility helpers
 # ---------------------------------------------------------------------------
@@ -403,35 +420,34 @@ def _apply_hard_guards(
     # Guard 2: editor on a file not yet read → cat it first
     if tool == "editor":
         fp = action["file_path"]
-        if fp != "RCA.md" and fp not in persistent.known_files:
+        if fp != "RCA.md" and fp not in persistent.seen_cats and fp not in persistent.edited_files:
             return {"tool": "terminal", "command": f"cat {fp}", "file_path": "", "file_content": ""}
 
-    # Guard 3: terminal cat on a file already seen and not edited → skip to replay
-    if tool == "terminal":
-        cmd = action["command"]
-        if cmd.startswith("cat "):
-            target = cmd[4:].strip()
-            already_seen = target in persistent.seen_cats
-            been_edited  = target in persistent.edited_files
-            if already_seen and not been_edited:
-                return {"tool": "replay", "command": replay_name, "file_path": "", "file_content": ""}
-
-    # Guard 4: enforce correct replay command for this task
+    # Guard 3: enforce correct replay command for this task
     if tool == "replay":
         # Hard cap replay spam: at most 2 consecutive replays without an edit.
         if (
             persistent.consecutive_replays_without_edit >= 2
             and derived.remaining_steps > 2
         ):
-            candidate_files = [
-                path for path in sorted(persistent.known_files.keys())
-                if path.endswith(".py") and path != "RCA.md"
-            ]
+            candidate_files = _candidate_edit_files(persistent, derived)
             if candidate_files:
                 return {
                     "tool": "editor",
                     "command": "",
                     "file_path": candidate_files[0],
+                    "file_content": "",
+                }
+            # If we have no useful edit target, read one unread source file.
+            unread_sources = [
+                path for path in derived.unread_candidate_files
+                if path.endswith(".py")
+            ]
+            if unread_sources:
+                return {
+                    "tool": "terminal",
+                    "command": f"cat {unread_sources[0]}",
+                    "file_path": "",
                     "file_content": "",
                 }
         # Avoid replay-only loops before any meaningful code change.
@@ -439,10 +455,7 @@ def _apply_hard_guards(
             not derived.has_code_edit
             and derived.remaining_steps > 2
         ):
-            candidate_files = [
-                path for path in sorted(persistent.known_files.keys())
-                if path.endswith(".py") and path != "RCA.md"
-            ]
+            candidate_files = _candidate_edit_files(persistent, derived)
             if candidate_files:
                 return {
                     "tool": "editor",
@@ -450,9 +463,38 @@ def _apply_hard_guards(
                     "file_path": candidate_files[0],
                     "file_content": "",
                 }
+            unread_sources = [
+                path for path in derived.unread_candidate_files
+                if path.endswith(".py")
+            ]
+            if unread_sources:
+                return {
+                    "tool": "terminal",
+                    "command": f"cat {unread_sources[0]}",
+                    "file_path": "",
+                    "file_content": "",
+                }
         action["command"] = replay_name
 
     return action
+
+
+def _candidate_edit_files(persistent: PersistentState, derived: DerivedState) -> List[str]:
+    """Rank likely code edit targets to break replay/cat loops."""
+    seen_sources = sorted(
+        path for path in persistent.seen_cats
+        if path.endswith(".py") and path != "RCA.md"
+    )
+    unseen_but_known = sorted(
+        path for path in persistent.known_files.keys()
+        if path.endswith(".py") and path != "RCA.md" and path not in persistent.seen_cats
+    )
+    unread_sources = sorted(
+        path for path in derived.unread_candidate_files
+        if path.endswith(".py") and path != "RCA.md"
+    )
+    # Prefer files the model has already read, then known files, then unread files.
+    return seen_sources + unseen_but_known + unread_sources
 
 
 def _choose_forced_action(
@@ -593,6 +635,8 @@ async def _build_editor_content(
     task_id: str,
     alert_message: str,
     known_logs: Dict[str, str],
+    known_files: Dict[str, str],
+    edited_files: Set[str],
     history: List[StepRecord],
 ) -> str:
     history_lines = [
@@ -606,6 +650,14 @@ async def _build_editor_content(
         for log_name, log_content in known_logs.items()
     ]
     logs_block = "\n\n".join(log_sections) if log_sections else "None"
+    edited_source_sections = []
+    if file_path == "RCA.md":
+        for edited in sorted(edited_files):
+            if edited.endswith(".py") and edited in known_files:
+                edited_source_sections.append(
+                    f"{edited}:\n{known_files[edited][:2000]}"
+                )
+    edited_source_block = "\n\n".join(edited_source_sections) if edited_source_sections else "None"
 
     response = client.chat.completions.create(
         model=MODEL_NAME,
@@ -618,6 +670,7 @@ async def _build_editor_content(
                     f"Target file: {file_path}\n\n"
                     f"Alert:\n{alert_message or 'None'}\n\n"
                     f"Known logs:\n{logs_block}\n\n"
+                    f"Edited source snapshots:\n{edited_source_block}\n\n"
                     f"Recent history:\n{history_block}\n\n"
                     f"Current file contents:\n{current_source}"
                 ),
@@ -832,15 +885,38 @@ async def run_inference(task: int) -> Dict[str, Any]:
                     fp = action_dict["file_path"]
                     if not action_dict.get("file_content", "").strip():
                         current_source = persistent.known_files.get(fp, "")
-                        action_dict["file_content"] = await _build_editor_content(
-                            client=llm_client,
-                            file_path=fp,
-                            current_source=current_source,
-                            task_id=task_id,
-                            alert_message=alert_message,
-                            known_logs=persistent.known_logs,
-                            history=persistent.history,
-                        )
+                        try:
+                            action_dict["file_content"] = await _build_editor_content(
+                                client=llm_client,
+                                file_path=fp,
+                                current_source=current_source,
+                                task_id=task_id,
+                                alert_message=alert_message,
+                                known_logs=persistent.known_logs,
+                                known_files=persistent.known_files,
+                                edited_files=persistent.edited_files,
+                                history=persistent.history,
+                            )
+                        except Exception as exc:
+                            err = str(exc).lower()
+                            if "402" in err or "depleted" in err or "credits" in err:
+                                llm_disabled = True
+                                if persistent.last_code_edit_step is not None:
+                                    action_dict = {
+                                        "tool": "replay",
+                                        "command": replay_name,
+                                        "file_path": "",
+                                        "file_content": "",
+                                    }
+                                else:
+                                    action_dict = {
+                                        "tool": "submit",
+                                        "command": "",
+                                        "file_path": "",
+                                        "file_content": "",
+                                    }
+                            else:
+                                raise
 
                 # ── Validate with pydantic model ──────────────────────────
                 _ = SREAction(**action_dict)
@@ -895,9 +971,19 @@ async def run_inference(task: int) -> Dict[str, Any]:
                 submit_error   = submit_info.get("last_action_error") or submit_obs.get("stderr") or None
                 log_step(step=steps_taken, action="submit", reward=reward, done=submit_done, error=submit_error)
 
-            raw_score = float((final_payload.get("info") or {}).get("score") or 0.0)
+            info_payload = final_payload.get("info") or {}
+            raw_score = float(info_payload.get("score") or 0.0)
             score     = _normalize_task_score(raw_score)
             success   = raw_score >= SUCCESS_SCORE_THRESHOLD
+            breakdown = info_payload.get("grading_breakdown")
+            if ENABLE_GRADE_BREAKDOWN_LOGS and isinstance(breakdown, dict):
+                numeric_breakdown = {
+                    str(key): float(value)
+                    for key, value in breakdown.items()
+                    if isinstance(value, (int, float))
+                }
+                if numeric_breakdown:
+                    log_grade_breakdown(numeric_breakdown)
 
     except Exception as exc:
         print(f"[ERROR] Inference failed: {type(exc).__name__}: {exc!r}", flush=True)

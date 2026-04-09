@@ -50,6 +50,7 @@ class SREEnvironment(Environment):
         self._task_name = ""
         self._max_steps = 50
         self._cumulative_reward = 0.0
+        self._latest_grade_breakdown: Optional[dict[str, float]] = None
         self.logger = logging.getLogger("rl_env")
 
     def reset(self, task_id: str | None = None) -> SREObservation:
@@ -76,6 +77,7 @@ class SREEnvironment(Environment):
         self._task_name = task_config.name
         self._max_steps = task_config.max_steps
         self._cumulative_reward = 0.0
+        self._latest_grade_breakdown = None
         self.rewarder = SREStepRewarder()
 
         alert_data = asyncio.run(self.alert_provider.get_alert(resolved_task_id))
@@ -143,6 +145,7 @@ class SREEnvironment(Environment):
             "score": final_score,
             "message": info_message,
             "last_action_error": last_action_error,
+            "grading_breakdown": self._latest_grade_breakdown if final_score is not None else None,
         }
         return observation
 
@@ -236,7 +239,11 @@ class SREEnvironment(Environment):
     def _grade_current_workspace(self, task_config) -> float:
         assert self._episode_initialized
         fixture_path = self.fixtures_dir / self._task_id
-        return asyncio.run(self.grader.grade_episode(task_config, fixture_path, self.workspace_root))
+        breakdown = asyncio.run(
+            self.grader.grade_episode_with_breakdown(task_config, fixture_path, self.workspace_root)
+        )
+        self._latest_grade_breakdown = breakdown
+        return float(breakdown.get("total_score", 0.0))
 
     def _compute_reward(
         self,
