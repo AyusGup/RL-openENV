@@ -130,6 +130,22 @@ Deploy to Hugging Face Spaces with:
 openenv push . --repo-id Jha-ayush/rl-openenv
 ```
 
+## GitHub Actions Auto Deploy
+This repository includes an auto-deploy workflow at `.github/workflows/deploy-hf-space.yml`.
+
+Trigger behavior:
+- Runs on every push to `main` (including merge commits).
+- Can also be started manually with `workflow_dispatch`.
+
+Required GitHub repository settings:
+- Secret: `HF_TOKEN`
+- Variable: `HF_SPACE_REPO_ID` (example: `Jha-ayush/rl-openenv`)
+
+Once these are set, merging to `main` will automatically run:
+```bash
+openenv push . --repo-id "$HF_SPACE_REPO_ID"
+```
+
 Runtime workspace is created under `workspace/` by default.
 
 To create a token:
