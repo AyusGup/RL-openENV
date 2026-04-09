@@ -111,7 +111,7 @@ class SREGrader:
                 env=env,
                 capture_output=True,
                 text=True,
-                timeout=30,
+                timeout=120,
             )
         except Exception:
             return 0.0

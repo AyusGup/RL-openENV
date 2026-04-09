@@ -1,5 +1,5 @@
 """
-Inference Script (SRE Tasks)
+Inference Script (SRE Tasks) — refactored
 """
 
 from __future__ import annotations
@@ -8,8 +8,12 @@ import argparse
 import asyncio
 import ast
 import json
+import math
 import os
 import re
+from dataclasses import dataclass, field
+from functools import lru_cache
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 import httpx
@@ -17,7 +21,6 @@ from openai import OpenAI
 
 try:
     from dotenv import load_dotenv
-
     load_dotenv()
 except Exception:
     pass
@@ -28,15 +31,20 @@ except ImportError:
     from models import SREAction  # type: ignore
 
 
-API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
-API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY", "")
-MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
-BENCHMARK = os.getenv("BENCHMARK", "rl_env")
-IMAGE_NAME = os.getenv("IMAGE_NAME")
-LOCAL_BASE_URL = os.getenv("EVAL_BASE_URL", "http://127.0.0.1:8000")
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
 
-MAX_STEPS = int(os.getenv("MAX_STEPS", "20"))
+API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
+API_KEY      = os.getenv("HF_TOKEN") or os.getenv("API_KEY", "")
+MODEL_NAME   = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
+BENCHMARK    = os.getenv("BENCHMARK", "rl_env")
+LOCAL_BASE_URL = os.getenv("EVAL_BASE_URL", "http://127.0.0.1:8000")
+HTTP_TIMEOUT_SECONDS = float(os.getenv("HTTP_TIMEOUT_SECONDS", "180"))
+
+MAX_STEPS               = int(os.getenv("MAX_STEPS", "20"))
 SUCCESS_SCORE_THRESHOLD = float(os.getenv("SUCCESS_SCORE_THRESHOLD", "0.5"))
+SCORE_EPSILON           = float(os.getenv("SCORE_EPSILON", "1e-6"))
 
 TASK_MAP: Dict[int, str] = {
     1: "task1_wrong_status",
@@ -45,25 +53,188 @@ TASK_MAP: Dict[int, str] = {
 }
 
 REPLAY_MAP: Dict[str, str] = {
-    "task1_wrong_status": "create_item_contract",
-    "task2_retry_logic": "retry_health_contract",
-    "task3_cascading_failure": "cascading_timeout_budget",
+    "task1_wrong_status":     "create_item_contract",
+    "task2_retry_logic":      "retry_health_contract",
+    "task3_cascading_failure":"cascading_timeout_budget",
 }
+
+# ---------------------------------------------------------------------------
+# Prompts
+# ---------------------------------------------------------------------------
 
 ACTION_SYSTEM_PROMPT = """
 You are controlling an SRE incident-response environment.
-Choose exactly one next action.
 
-Return ONLY JSON with keys:
+At every turn, choose exactly one next action to execute. Available tools:
+- terminal: run one shell command in the task workspace
+- editor: write the full replacement contents of one file
+- replay: run a deterministic replay probe against the current workspace code
+- submit: finish and trigger grading
+
+Return exactly one JSON object and nothing else with these keys:
 {"tool":"terminal|editor|replay|submit","command":"","file_path":"","file_content":""}
 
 Rules:
-- Do not repeat the same `cat <file>` on unchanged files.
-- Prefer progress: inspect -> edit -> replay -> submit.
-- Replay command must match the task replay name.
-- Submit once replay shows success.
+- Output valid JSON only. No markdown fences.
+- Use terminal commands to inspect logs and inspect source.
+- Use editor only after you have inspected the target file.
+- For editor actions, set file_path and leave file_content empty. The client will request the full file contents separately.
+- For terminal actions, set command and leave file_path/file_content empty.
+- For replay, set command to the correct replay name for this task (provided in the prompt).
+- For submit, leave command/file_path/file_content empty.
+- Prefer short deterministic commands like: cat logs/error.log, cat app/main.py, ls .
+- Do not repeat `cat` on the same file unless that file was edited since your last read.
+- Treat RCA.md as a final incident document: investigate first, fix the code, verify with replay, then write RCA.
+- Create RCA.md before submit with headings: Root Cause, Affected Services, Fix Applied, Prevention.
+- After replay confirms success and RCA.md exists, submit immediately.
+- Keep RCA language concise, factual, and non-speculative.
+- Submit once the fix is verified or when more probing is unlikely to help.
 """.strip()
 
+EDITOR_SYSTEM_PROMPT = """
+You are preparing a full replacement file for an SRE environment edit action.
+Use the incident alert, recent logs, prior action history, and the current file contents to infer the fix.
+Return only the complete corrected file contents. Do not add explanations or markdown fences.
+""".strip()
+
+
+# ---------------------------------------------------------------------------
+# State dataclasses
+# ---------------------------------------------------------------------------
+
+@dataclass
+class StepRecord:
+    step: int
+    action: str
+    reward: float
+    done: bool
+    error: Optional[str]
+    stdout: str
+    stderr: str
+
+
+@dataclass
+class PersistentState:
+    # file/log memory
+    known_files:   Dict[str, str] = field(default_factory=dict)
+    known_logs:    Dict[str, str] = field(default_factory=dict)
+    edited_files:  Set[str]       = field(default_factory=set)
+    seen_cats:     Set[str]       = field(default_factory=set)
+    # replay state
+    replay_attempted:    bool           = False
+    replay_passed:       bool           = False
+    last_replay_stdout:  Optional[str]  = None
+    last_replay_step:    Optional[int]  = None
+    last_code_edit_step: Optional[int]  = None
+    consecutive_replays_without_edit: int = 0
+    # artifact state
+    rca_written: bool = False
+    submitted:   bool = False
+    # history
+    history: List[StepRecord] = field(default_factory=list)
+
+
+@dataclass
+class DerivedState:
+    # code progress
+    has_code_edit:      bool
+    last_action_type:   str
+    last_action_target: str
+    # replay
+    has_replay_attempt: bool
+    has_replay_pass:    bool
+    has_replay_after_latest_code_edit: bool
+    # artifacts
+    has_rca:                  bool
+    unread_candidate_files:   List[str]
+    # budget
+    remaining_steps: int
+    # derived decisions
+    needs_rca_now:     bool
+    should_force_replay: bool
+    should_replay_after_latest_code_edit: bool
+    must_submit_now:   bool
+
+
+# ---------------------------------------------------------------------------
+# Derived-state computation
+# ---------------------------------------------------------------------------
+
+def compute_derived_state(
+    persistent: PersistentState,
+    file_tree: List[str],
+    step: int,
+    max_steps: int,
+) -> DerivedState:
+    remaining = max_steps - step + 1
+
+    last = persistent.history[-1] if persistent.history else None
+    last_action_type   = last.action.split("(")[0] if last else ""
+    last_action_target = last.action if last else ""
+
+    has_code_edit = any(
+        r.action.startswith("write(") and r.action.endswith(".py)")
+        for r in persistent.history
+    )
+    has_replay_after_latest_code_edit = (
+        persistent.last_code_edit_step is None
+        or (
+            persistent.last_replay_step is not None
+            and persistent.last_replay_step > persistent.last_code_edit_step
+        )
+    )
+
+    has_rca = "RCA.md" in file_tree or "RCA.md" in persistent.known_files
+
+    unread_candidate_files = [
+        f for f in file_tree
+        if f not in persistent.seen_cats and not f.endswith(".md")
+    ]
+
+    # RCA evidence: code edited + (replay passed OR replay attempted with stdout evidence)
+    enough_evidence = has_code_edit and (
+        persistent.replay_passed
+        or (persistent.replay_attempted and bool(persistent.last_replay_stdout))
+    )
+    needs_rca_now = enough_evidence and not has_rca
+
+    # Force replay when: code edited, replay not attempted, budget closing
+    steps_needed = (
+        (1 if not persistent.replay_attempted else 0)
+        + (1 if not has_rca else 0)
+        + 2  # safety buffer for submit + server round-trip
+    )
+    should_force_replay = (
+        has_code_edit
+        and not persistent.replay_attempted
+        and remaining <= steps_needed
+    )
+    should_replay_after_latest_code_edit = (
+        has_code_edit and not has_replay_after_latest_code_edit
+    )
+
+    must_submit_now = remaining <= 1
+
+    return DerivedState(
+        has_code_edit=has_code_edit,
+        last_action_type=last_action_type,
+        last_action_target=last_action_target,
+        has_replay_attempt=persistent.replay_attempted,
+        has_replay_pass=persistent.replay_passed,
+        has_replay_after_latest_code_edit=has_replay_after_latest_code_edit,
+        has_rca=has_rca,
+        unread_candidate_files=unread_candidate_files,
+        remaining_steps=remaining,
+        needs_rca_now=needs_rca_now,
+        should_force_replay=should_force_replay,
+        should_replay_after_latest_code_edit=should_replay_after_latest_code_edit,
+        must_submit_now=must_submit_now,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Logging helpers
+# ---------------------------------------------------------------------------
 
 def log_start(task: str, env: str, model: str) -> None:
     print(f"[START] task={task} env={env} model={model}", flush=True)
@@ -72,7 +243,8 @@ def log_start(task: str, env: str, model: str) -> None:
 def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
     error_val = error if error else "null"
     print(
-        f"[STEP] step={step} action={action} reward={reward:.2f} done={str(done).lower()} error={error_val}",
+        f"[STEP] step={step} action={action} reward={reward:.2f} "
+        f"done={str(done).lower()} error={error_val}",
         flush=True,
     )
 
@@ -80,16 +252,36 @@ def log_step(step: int, action: str, reward: float, done: bool, error: Optional[
 def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
     print(
-        f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}",
+        f"[END] success={str(success).lower()} steps={steps} "
+        f"score={score:.3f} rewards={rewards_str}",
         flush=True,
     )
 
+
+# ---------------------------------------------------------------------------
+# Utility helpers
+# ---------------------------------------------------------------------------
 
 def _safe_json(value: Any) -> str:
     try:
         return json.dumps(value, ensure_ascii=True)
     except Exception:
         return str(value)
+
+
+def _normalize_task_score(raw_score: Any, epsilon: float = SCORE_EPSILON) -> float:
+    try:
+        score = float(raw_score)
+    except Exception:
+        score = 0.0
+    if not math.isfinite(score):
+        score = 0.0
+    eps = min(max(float(epsilon), 1e-12), 0.49)
+    if score <= 0.0:
+        return eps
+    if score >= 1.0:
+        return 1.0 - eps
+    return score
 
 
 def _extract_model_json(text: str) -> Dict[str, Any]:
@@ -101,12 +293,10 @@ def _extract_model_json(text: str) -> Dict[str, Any]:
         return json.loads(raw)
     except json.JSONDecodeError:
         pass
-
     try:
         return json.loads(raw, strict=False)
     except json.JSONDecodeError:
         pass
-
     match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
     if match:
         candidate = match.group(0)
@@ -114,11 +304,9 @@ def _extract_model_json(text: str) -> Dict[str, Any]:
             return json.loads(candidate, strict=False)
         except json.JSONDecodeError:
             raw = candidate
-
-    # Python-literal fallback (single quotes/triple quotes from some models)
-    pythonish = re.sub(r"\btrue\b", "True", raw, flags=re.IGNORECASE)
+    pythonish = re.sub(r"\btrue\b",  "True",  raw,       flags=re.IGNORECASE)
     pythonish = re.sub(r"\bfalse\b", "False", pythonish, flags=re.IGNORECASE)
-    pythonish = re.sub(r"\bnull\b", "None", pythonish, flags=re.IGNORECASE)
+    pythonish = re.sub(r"\bnull\b",  "None",  pythonish, flags=re.IGNORECASE)
     parsed = ast.literal_eval(pythonish)
     if not isinstance(parsed, dict):
         raise RuntimeError("Model output is not an object.")
@@ -129,11 +317,10 @@ def _normalize_action(raw: Dict[str, Any]) -> Dict[str, str]:
     tool = str(raw.get("tool") or "").strip().lower()
     if tool not in {"terminal", "editor", "replay", "submit"}:
         raise RuntimeError(f"Unsupported tool: {tool or 'empty'}")
-
-    action = {
-        "tool": tool,
-        "command": str(raw.get("command") or "").strip(),
-        "file_path": str(raw.get("file_path") or "").strip(),
+    action: Dict[str, str] = {
+        "tool":         tool,
+        "command":      str(raw.get("command")      or "").strip(),
+        "file_path":    str(raw.get("file_path")    or "").strip(),
         "file_content": str(raw.get("file_content") or ""),
     }
     if action["tool"] == "terminal" and not action["command"]:
@@ -145,143 +332,14 @@ def _normalize_action(raw: Dict[str, Any]) -> Dict[str, str]:
     return action
 
 
-def _build_prompt(
-    task_id: str,
-    observation: Dict[str, Any],
-    history: List[str],
-    seen_cats: Set[str],
-    replay_name: str,
-    step: int,
-    max_steps: int,
-) -> str:
-    stdout = str(observation.get("stdout") or "")
-    stderr = str(observation.get("stderr") or "")
-    file_tree = observation.get("file_tree") or []
-    hist_block = "\n".join(history[-8:]) if history else "None"
-    seen_cats_block = ", ".join(sorted(seen_cats)) if seen_cats else "None"
-    return (
-        f"Task: {task_id}\n"
-        f"Step: {step}/{max_steps}\n"
-        f"Replay command for this task: {replay_name}\n\n"
-        f"Latest stdout:\n{stdout[:2000] or 'None'}\n\n"
-        f"Latest stderr:\n{stderr[:1200] or 'None'}\n\n"
-        f"Workspace files:\n{_safe_json(file_tree)}\n\n"
-        f"Recent actions:\n{hist_block}\n\n"
-        f"Already-cat files (avoid repeating unless edited): {seen_cats_block}\n"
-    )
-
-
-def _choose_action_from_llm(
-    client: OpenAI,
-    task_id: str,
-    obs: Dict[str, Any],
-    history: List[str],
-    seen_cats: Set[str],
-    step: int,
-    max_steps: int,
-) -> Dict[str, str]:
-    replay_name = REPLAY_MAP.get(task_id, "create_item_contract")
-    prompt = _build_prompt(
-        task_id=task_id,
-        observation=obs,
-        history=history,
-        seen_cats=seen_cats,
-        replay_name=replay_name,
-        step=step,
-        max_steps=max_steps,
-    )
-    response = client.chat.completions.create(
-        model=MODEL_NAME,
-        messages=[
-            {"role": "system", "content": ACTION_SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ],
-        temperature=0.0,
-        max_tokens=350,
-    )
-    content = response.choices[0].message.content or ""
-    return _normalize_action(_extract_model_json(content))
-
-
-FALLBACK_TERMINAL_PLAN: Dict[str, List[str]] = {
-    "task1_wrong_status": ["cat logs/error.log", "cat app/main.py"],
-    "task2_retry_logic": ["cat logs/app.log", "cat app/retry_handler.py", "cat app/main.py"],
-    "task3_cascading_failure": [
-        "cat logs/service_a.log",
-        "cat logs/service_b.log",
-        "cat service_a/config.py",
-        "cat service_a/main.py",
-        "cat service_b/main.py",
-    ],
-}
-
-
-def _fallback_action(task_id: str, replay_done: bool, seen_cats: Set[str]) -> Dict[str, str]:
-    replay_name = REPLAY_MAP.get(task_id, "create_item_contract")
-    if replay_done:
-        return {"tool": "submit", "command": "", "file_path": "", "file_content": ""}
-    for cmd in FALLBACK_TERMINAL_PLAN.get(task_id, []):
-        if cmd.startswith("cat "):
-            target = cmd[4:].strip()
-            if target in seen_cats:
-                continue
-        return {"tool": "terminal", "command": cmd, "file_path": "", "file_content": ""}
-    return {"tool": "replay", "command": replay_name, "file_path": "", "file_content": ""}
-
-
-def _apply_policy(
-    action: Dict[str, str],
-    task_id: str,
-    seen_cats: Set[str],
-    edited_files: Set[str],
-    replay_done: bool,
-    step: int,
-    max_steps: int,
-) -> Dict[str, str]:
-    replay_name = REPLAY_MAP.get(task_id, "create_item_contract")
-
-    if replay_done:
-        return {"tool": "submit", "command": "", "file_path": "", "file_content": ""}
-
-    if step >= max_steps - 1:
-        return {"tool": "submit", "command": "", "file_path": "", "file_content": ""}
-
-    if action["tool"] == "replay":
-        action["command"] = replay_name
-        return action
-
+def _sanitize_action_for_log(action: Dict[str, str]) -> str:
     if action["tool"] == "terminal":
-        cmd = action["command"].strip()
-        if cmd.startswith("cat "):
-            target = cmd[4:].strip()
-            if target in seen_cats and target not in edited_files:
-                return {"tool": "replay", "command": replay_name, "file_path": "", "file_content": ""}
-        return action
-
+        return action.get("command") or ""
     if action["tool"] == "editor":
-        # If model forgot content, force a replay instead of empty write.
-        if not action["file_content"].strip():
-            return {"tool": "replay", "command": replay_name, "file_path": "", "file_content": ""}
-        return action
-
-    return action
-
-
-async def _get_score(base_url: str, task_id: str, fallback_rewards: List[float]) -> float:
-    try:
-        async with httpx.AsyncClient(timeout=20.0) as http:
-            resp = await http.get(f"{base_url}/grader")
-            if resp.status_code == 200:
-                payload = resp.json()
-                scores = payload.get("task_scores", {})
-                if task_id in scores:
-                    return float(scores[task_id] or 0.0)
-                mapped = task_id.replace("task", "task_")
-                if mapped in scores:
-                    return float(scores[mapped] or 0.0)
-    except Exception:
-        pass
-    return float(fallback_rewards[-1]) if fallback_rewards else 0.0
+        return f"write({action.get('file_path') or ''})"
+    if action["tool"] == "replay":
+        return f"replay({action.get('command') or ''})"
+    return "submit"
 
 
 def _parse_reward(result_payload: Dict[str, Any]) -> float:
@@ -291,129 +349,572 @@ def _parse_reward(result_payload: Dict[str, Any]) -> float:
     return float(reward_payload or 0.0)
 
 
+@lru_cache(maxsize=16)
+def _task_requires_rca(task_id: str) -> bool:
+    candidate_paths = [
+        Path(__file__).resolve().parent / "fixtures" / task_id / "task_config.json",
+        Path("fixtures") / task_id / "task_config.json",
+    ]
+    for config_path in candidate_paths:
+        if not config_path.exists():
+            continue
+        try:
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            expected = config.get("expected_fix_files") or []
+            return "RCA.md" in expected
+        except Exception:
+            continue
+    return task_id in {"task1_wrong_status", "task2_retry_logic", "task3_cascading_failure"}
+
+
+# ---------------------------------------------------------------------------
+# Action selection helpers
+# ---------------------------------------------------------------------------
+
+def _apply_hard_guards(
+    action: Dict[str, str],
+    derived: DerivedState,
+    persistent: PersistentState,
+    task_id: str,
+    replay_name: str,
+) -> Dict[str, str]:
+    """
+    Normalizes an LLM-proposed action through a series of hard guards.
+    Order matters: each guard either rewrites the action or passes through.
+    """
+    tool = action["tool"]
+
+    # Guard 1: submit proposed but RCA missing → write RCA first
+    if (
+        tool == "submit"
+        and _task_requires_rca(task_id)
+        and not derived.has_rca
+    ):
+        return {"tool": "editor", "command": "", "file_path": "RCA.md", "file_content": ""}
+
+    # Guard 1b: require replay after the latest code edit before submit (if budget allows).
+    if (
+        tool == "submit"
+        and derived.should_replay_after_latest_code_edit
+        and derived.remaining_steps > 1
+    ):
+        return {"tool": "replay", "command": replay_name, "file_path": "", "file_content": ""}
+
+    # Guard 2: editor on a file not yet read → cat it first
+    if tool == "editor":
+        fp = action["file_path"]
+        if fp != "RCA.md" and fp not in persistent.known_files:
+            return {"tool": "terminal", "command": f"cat {fp}", "file_path": "", "file_content": ""}
+
+    # Guard 3: terminal cat on a file already seen and not edited → skip to replay
+    if tool == "terminal":
+        cmd = action["command"]
+        if cmd.startswith("cat "):
+            target = cmd[4:].strip()
+            already_seen = target in persistent.seen_cats
+            been_edited  = target in persistent.edited_files
+            if already_seen and not been_edited:
+                return {"tool": "replay", "command": replay_name, "file_path": "", "file_content": ""}
+
+    # Guard 4: enforce correct replay command for this task
+    if tool == "replay":
+        # Hard cap replay spam: at most 2 consecutive replays without an edit.
+        if (
+            persistent.consecutive_replays_without_edit >= 2
+            and derived.remaining_steps > 2
+        ):
+            candidate_files = [
+                path for path in sorted(persistent.known_files.keys())
+                if path.endswith(".py") and path != "RCA.md"
+            ]
+            if candidate_files:
+                return {
+                    "tool": "editor",
+                    "command": "",
+                    "file_path": candidate_files[0],
+                    "file_content": "",
+                }
+        # Avoid replay-only loops before any meaningful code change.
+        if (
+            not derived.has_code_edit
+            and derived.remaining_steps > 2
+        ):
+            candidate_files = [
+                path for path in sorted(persistent.known_files.keys())
+                if path.endswith(".py") and path != "RCA.md"
+            ]
+            if candidate_files:
+                return {
+                    "tool": "editor",
+                    "command": "",
+                    "file_path": candidate_files[0],
+                    "file_content": "",
+                }
+        action["command"] = replay_name
+
+    return action
+
+
+def _choose_forced_action(
+    derived: DerivedState,
+    task_id: str,
+    replay_name: str,
+) -> Optional[Dict[str, str]]:
+    """
+    Forced actions (priority 1 = done→break is in the main loop).
+    Returns None if no forced action is required.
+    """
+    requires_rca = _task_requires_rca(task_id)
+
+    # Priority 2: after code edits, create RCA before replay when budget allows.
+    if requires_rca and derived.has_code_edit and not derived.has_rca and derived.remaining_steps > 2:
+        return {"tool": "editor", "command": "", "file_path": "RCA.md", "file_content": ""}
+
+    # Priority 3: force replay
+    if derived.should_force_replay:
+        return {"tool": "replay", "command": replay_name, "file_path": "", "file_content": ""}
+
+    # Priority 4: replay after latest code edit before submit (if budget allows).
+    if (
+        derived.should_replay_after_latest_code_edit
+        and derived.remaining_steps > 1
+        and (not requires_rca or derived.has_rca)
+    ):
+        return {"tool": "replay", "command": replay_name, "file_path": "", "file_content": ""}
+
+    # Priority 5: RCA evidence sufficient, RCA missing
+    if derived.needs_rca_now and requires_rca:
+        return {"tool": "editor", "command": "", "file_path": "RCA.md", "file_content": ""}
+
+    # Priority 6: if replay has passed and RCA requirement is met, submit early.
+    if (
+        derived.has_code_edit
+        and derived.has_replay_pass
+        and not derived.should_replay_after_latest_code_edit
+        and (not requires_rca or derived.has_rca)
+    ):
+        return {"tool": "submit", "command": "", "file_path": "", "file_content": ""}
+
+    # Priority 7: final step
+    if derived.must_submit_now:
+        return {"tool": "submit", "command": "", "file_path": "", "file_content": ""}
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# LLM calls
+# ---------------------------------------------------------------------------
+
+def _build_action_prompt(
+    task_id: str,
+    obs: Dict[str, Any],
+    persistent: PersistentState,
+    derived: DerivedState,
+    replay_name: str,
+    step: int,
+    max_steps: int,
+    alert_message: str,
+) -> str:
+    stdout = str(obs.get("stdout") or "")
+    stderr = str(obs.get("stderr") or "")
+    file_tree = obs.get("file_tree") or []
+
+    history_lines = []
+    for rec in persistent.history[-8:]:
+        history_lines.append(
+            f"- step={rec.step} action={rec.action} reward={rec.reward:.2f} "
+            f"done={str(rec.done).lower()} error={rec.error or 'null'} "
+            f"stdout={rec.stdout[:400]} stderr={rec.stderr[:300]}"
+        )
+    hist_block     = "\n".join(history_lines) if history_lines else "None"
+    seen_cats_block = ", ".join(sorted(persistent.seen_cats)) if persistent.seen_cats else "None"
+    unread_block    = ", ".join(derived.unread_candidate_files) if derived.unread_candidate_files else "None"
+
+    return (
+        f"Task: {task_id}\n"
+        f"Step: {step}/{max_steps} | Remaining: {derived.remaining_steps}\n"
+        f"Replay command for this task: {replay_name}\n\n"
+        f"Alert:\n{alert_message or 'None'}\n\n"
+        f"Latest stdout:\n{stdout[:2000] or 'None'}\n\n"
+        f"Latest stderr:\n{stderr[:1200] or 'None'}\n\n"
+        f"Workspace file tree:\n{_safe_json(file_tree)}\n\n"
+        f"Recent actions (last 8):\n{hist_block}\n\n"
+        f"--- Derived State ---\n"
+        f"has_code_edit:     {derived.has_code_edit}\n"
+        f"has_replay_attempt:{derived.has_replay_attempt}\n"
+        f"has_replay_pass:   {derived.has_replay_pass}\n"
+        f"replay_after_latest_code_edit: {derived.has_replay_after_latest_code_edit}\n"
+        f"has_rca:           {derived.has_rca}\n"
+        f"Already-cat files (skip unless edited): {seen_cats_block}\n"
+        f"Unread candidate files:                 {unread_block}\n"
+        f"Guidance: If replay already passed and RCA.md exists, choose submit now.\n"
+    )
+
+
+def _choose_action_from_llm(
+    client: OpenAI,
+    task_id: str,
+    obs: Dict[str, Any],
+    persistent: PersistentState,
+    derived: DerivedState,
+    step: int,
+    max_steps: int,
+    alert_message: str,
+    replay_name: str,
+) -> Dict[str, str]:
+    prompt = _build_action_prompt(
+        task_id=task_id,
+        obs=obs,
+        persistent=persistent,
+        derived=derived,
+        replay_name=replay_name,
+        step=step,
+        max_steps=max_steps,
+        alert_message=alert_message,
+    )
+    response = client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=[
+            {"role": "system", "content": ACTION_SYSTEM_PROMPT},
+            {"role": "user",   "content": prompt},
+        ],
+        temperature=0.0,
+        max_tokens=350,
+    )
+    content = response.choices[0].message.content or ""
+    return _normalize_action(_extract_model_json(content))
+
+
+async def _build_editor_content(
+    client: OpenAI,
+    file_path: str,
+    current_source: str,
+    task_id: str,
+    alert_message: str,
+    known_logs: Dict[str, str],
+    history: List[StepRecord],
+) -> str:
+    history_lines = [
+        f"- step={r.step} action={r.action} reward={r.reward:.2f} error={r.error or 'null'}"
+        for r in history[-6:]
+    ]
+    history_block = "\n".join(history_lines) if history_lines else "None"
+
+    log_sections = [
+        f"{log_name}:\n{log_content[:2000]}"
+        for log_name, log_content in known_logs.items()
+    ]
+    logs_block = "\n\n".join(log_sections) if log_sections else "None"
+
+    response = client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=[
+            {"role": "system", "content": EDITOR_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": (
+                    f"Task: {task_id}\n"
+                    f"Target file: {file_path}\n\n"
+                    f"Alert:\n{alert_message or 'None'}\n\n"
+                    f"Known logs:\n{logs_block}\n\n"
+                    f"Recent history:\n{history_block}\n\n"
+                    f"Current file contents:\n{current_source}"
+                ),
+            },
+        ],
+        temperature=0.0,
+        max_tokens=1200,
+    )
+    raw = (response.choices[0].message.content or "").strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```[a-zA-Z0-9_+-]*\n?", "", raw)
+        raw = re.sub(r"\n?```$", "", raw)
+    raw = raw.strip()
+    if not raw:
+        raise RuntimeError("Model returned empty editor content.")
+    return raw
+
+
+# ---------------------------------------------------------------------------
+# State update after each step
+# ---------------------------------------------------------------------------
+
+def _update_persistent_state(
+    persistent: PersistentState,
+    action: Dict[str, str],
+    obs: Dict[str, Any],
+    reward: float,
+    done: bool,
+    last_error: Optional[str],
+    step: int,
+) -> None:
+    stdout = str(obs.get("stdout") or "")
+    stderr = str(obs.get("stderr") or "")
+    tool   = action["tool"]
+
+    # Terminal: track cat'd files
+    if tool == "terminal":
+        cmd = action["command"]
+        if cmd.startswith("cat "):
+            target = cmd[4:].strip()
+            persistent.seen_cats.add(target)
+            if stdout:
+                if target.endswith(".log"):
+                    persistent.known_logs[target] = stdout
+                else:
+                    persistent.known_files[target] = stdout
+
+    # Editor: track written files
+    if tool == "editor":
+        fp      = action["file_path"]
+        content = action.get("file_content", "")
+        persistent.edited_files.add(fp)
+        if content:
+            persistent.known_files[fp] = content
+        if fp.endswith(".py") and content.strip():
+            persistent.last_code_edit_step = step
+            persistent.consecutive_replays_without_edit = 0
+        if fp == "RCA.md":
+            persistent.rca_written = True
+        if not (fp.endswith(".py") and content.strip()):
+            persistent.consecutive_replays_without_edit = 0
+
+    # Replay: update replay state precisely
+    if tool == "replay":
+        persistent.replay_attempted   = True
+        persistent.last_replay_stdout = stdout
+        persistent.last_replay_step   = step
+        persistent.consecutive_replays_without_edit += 1
+        stdout_lower = stdout.lower()
+        if "contract_ok=true" in stdout_lower:
+            persistent.replay_passed = True
+        elif "contract_ok=false" in stdout_lower:
+            persistent.replay_passed = False
+        # if neither keyword is present, leave replay_passed unchanged
+    elif tool != "editor":
+        persistent.consecutive_replays_without_edit = 0
+
+    # Submit
+    if tool == "submit":
+        persistent.submitted = True
+
+    # Append to history
+    action_log = _sanitize_action_for_log(action)
+    persistent.history.append(StepRecord(
+        step=step,
+        action=action_log,
+        reward=reward,
+        done=done,
+        error=last_error,
+        stdout=stdout[:600],
+        stderr=stderr[:600],
+    ))
+
+
+# ---------------------------------------------------------------------------
+# Main inference loop
+# ---------------------------------------------------------------------------
+
 async def run_inference(task: int) -> Dict[str, Any]:
-    task_id = TASK_MAP.get(task, f"task{task}")
-    llm_client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+    task_id     = TASK_MAP.get(task, f"task{task}")
+    llm_client  = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+    replay_name = REPLAY_MAP.get(task_id, "create_item_contract")
 
+    persistent   = PersistentState()
     rewards: List[float] = []
-    steps_taken = 0
-    score = 0.0
-    success = False
-
-    seen_cats: Set[str] = set()
-    edited_files: Set[str] = set()
-    history: List[str] = []
-    replay_done = False
+    steps_taken  = 0
+    score        = 0.0
+    success      = False
     llm_disabled = False
+    alert_message= ""
 
     log_start(task=task_id, env=BENCHMARK, model=MODEL_NAME)
 
     try:
-        if IMAGE_NAME:
-            print("[WARN] IMAGE_NAME mode is not used in HTTP inference flow; using EVAL_BASE_URL/local server.", flush=True)
-        eval_base_url = LOCAL_BASE_URL
+        async with httpx.AsyncClient(base_url=LOCAL_BASE_URL, timeout=HTTP_TIMEOUT_SECONDS) as http:
 
-        async with httpx.AsyncClient(base_url=eval_base_url, timeout=60.0) as http:
+            # ── Reset ──────────────────────────────────────────────────────
             reset_resp = await http.post("/reset", json={"task_id": task_id})
             reset_resp.raise_for_status()
             result_payload = reset_resp.json()
-            obs_dict = result_payload.get("observation", {})
-
+            final_payload: Dict[str, Any] = result_payload
+            obs_dict       = result_payload.get("observation", {})
+            alert_message  = str(obs_dict.get("alert_message") or "")
+            file_tree: List[str] = list(obs_dict.get("file_tree") or [])
             done = bool(result_payload.get("done", False))
 
             for step in range(1, MAX_STEPS + 1):
+
+                # ── Priority 1: done ──────────────────────────────────────
                 if done:
                     break
 
-                if not llm_disabled:
-                    try:
-                        raw_action = _choose_action_from_llm(
-                            client=llm_client,
-                            task_id=task_id,
-                            obs=obs_dict,
-                            history=history,
-                            seen_cats=seen_cats,
-                            step=step,
-                            max_steps=MAX_STEPS,
-                        )
-                    except Exception as exc:
-                        err = str(exc).lower()
-                        if "402" in err or "depleted" in err or "credits" in err:
-                            llm_disabled = True
-                        raw_action = _fallback_action(task_id, replay_done, seen_cats)
-                else:
-                    raw_action = _fallback_action(task_id, replay_done, seen_cats)
-                action_dict = _apply_policy(
-                    action=raw_action,
-                    task_id=task_id,
-                    seen_cats=seen_cats,
-                    edited_files=edited_files,
-                    replay_done=replay_done,
+                # ── Compute derived state ─────────────────────────────────
+                derived = compute_derived_state(
+                    persistent=persistent,
+                    file_tree=file_tree,
                     step=step,
                     max_steps=MAX_STEPS,
                 )
-                # Validate action payload against schema before sending.
+
+                # ── Priorities 2-4: forced actions ────────────────────────
+                action_dict = _choose_forced_action(
+                    derived=derived,
+                    task_id=task_id,
+                    replay_name=replay_name,
+                )
+
+                # ── Priority 5: LLM proposes action ───────────────────────
+                if action_dict is None:
+                    if not llm_disabled:
+                        try:
+                            action_dict = _choose_action_from_llm(
+                                client=llm_client,
+                                task_id=task_id,
+                                obs=obs_dict,
+                                persistent=persistent,
+                                derived=derived,
+                                step=step,
+                                max_steps=MAX_STEPS,
+                                alert_message=alert_message,
+                                replay_name=replay_name,
+                            )
+                        except Exception as exc:
+                            err = str(exc).lower()
+                            if "402" in err or "depleted" in err or "credits" in err:
+                                llm_disabled = True
+                            # Safe fallback: submit when resolution criteria are met,
+                            # otherwise attempt replay.
+                            if (
+                                derived.has_code_edit
+                                and derived.has_replay_pass
+                                and not derived.should_replay_after_latest_code_edit
+                                and (not _task_requires_rca(task_id) or derived.has_rca)
+                            ):
+                                action_dict = {
+                                    "tool": "submit", "command": "",
+                                    "file_path": "", "file_content": "",
+                                }
+                            else:
+                                action_dict = {
+                                    "tool": "replay", "command": replay_name,
+                                    "file_path": "", "file_content": "",
+                                }
+                    else:
+                        if (
+                            derived.has_code_edit
+                            and derived.has_replay_pass
+                            and not derived.should_replay_after_latest_code_edit
+                            and (not _task_requires_rca(task_id) or derived.has_rca)
+                        ):
+                            action_dict = {
+                                "tool": "submit", "command": "",
+                                "file_path": "", "file_content": "",
+                            }
+                        else:
+                            action_dict = {
+                                "tool": "replay", "command": replay_name,
+                                "file_path": "", "file_content": "",
+                            }
+
+                # ── Priority 6: hard guards on LLM action ────────────────
+                action_dict = _apply_hard_guards(
+                    action=action_dict,
+                    derived=derived,
+                    persistent=persistent,
+                    task_id=task_id,
+                    replay_name=replay_name,
+                )
+
+                # ── Priority 7: editor → generate content ─────────────────
+                if action_dict["tool"] == "editor":
+                    fp = action_dict["file_path"]
+                    if not action_dict.get("file_content", "").strip():
+                        current_source = persistent.known_files.get(fp, "")
+                        action_dict["file_content"] = await _build_editor_content(
+                            client=llm_client,
+                            file_path=fp,
+                            current_source=current_source,
+                            task_id=task_id,
+                            alert_message=alert_message,
+                            known_logs=persistent.known_logs,
+                            history=persistent.history,
+                        )
+
+                # ── Validate with pydantic model ──────────────────────────
                 _ = SREAction(**action_dict)
 
+                # ── Priority 8: POST /step ────────────────────────────────
                 step_resp = await http.post("/step", json=action_dict)
                 step_resp.raise_for_status()
                 result_payload = step_resp.json()
+                final_payload = result_payload
 
-                obs_dict = result_payload.get("observation", {})
-                reward = _parse_reward(result_payload)
-                done = bool(result_payload.get("done", False))
-                info = result_payload.get("info") or {}
-                error = info.get("last_action_error") or obs_dict.get("stderr") or None
+                obs_dict      = result_payload.get("observation", {})
+                reward        = _parse_reward(result_payload)
+                done          = bool(result_payload.get("done", False))
+                info          = result_payload.get("info") or {}
+                last_error    = str(info.get("last_action_error") or "") or None
+                error_display = last_error or obs_dict.get("stderr") or None
 
-                if action_dict["tool"] == "terminal" and action_dict["command"].startswith("cat "):
-                    target = action_dict["command"][4:].strip()
-                    seen_cats.add(target)
-                if action_dict["tool"] == "editor" and action_dict["file_path"]:
-                    edited_files.add(action_dict["file_path"])
-                if action_dict["tool"] == "replay":
-                    if "contract_ok=true" in str(obs_dict.get("stdout", "")).lower():
-                        replay_done = True
+                # ── Priority 9: update persistent state ───────────────────
+                _update_persistent_state(
+                    persistent=persistent,
+                    action=action_dict,
+                    obs=obs_dict,
+                    reward=reward,
+                    done=done,
+                    last_error=last_error,
+                    step=step,
+                )
 
+                file_tree = list(obs_dict.get("file_tree") or file_tree)
                 rewards.append(reward)
                 steps_taken = step
-                action_log = _safe_json(action_dict).replace('"', "'")
-                history.append(f"{step}. {action_log} -> reward={reward:.2f} done={str(done).lower()}")
-                log_step(step=step, action=action_log, reward=reward, done=done, error=error)
 
+                action_log = _sanitize_action_for_log(action_dict)
+                log_step(step=step, action=action_log, reward=reward, done=done, error=error_display)
+
+            # ── Priority 10: loop exits without done → force submit ────────
             if not done:
-                submit_action = {"tool": "submit", "command": "", "file_path": "", "file_content": ""}
+                submit_action = {
+                    "tool": "submit", "command": "", "file_path": "", "file_content": "",
+                }
                 submit_resp = await http.post("/step", json=submit_action)
                 submit_resp.raise_for_status()
                 submit_payload = submit_resp.json()
-                reward = _parse_reward(submit_payload)
+                final_payload  = submit_payload
+                reward         = _parse_reward(submit_payload)
                 rewards.append(reward)
-                steps_taken += 1
-                submit_info = submit_payload.get("info") or {}
-                submit_obs = submit_payload.get("observation") or {}
-                submit_done = bool(submit_payload.get("done", False))
-                submit_error = submit_info.get("last_action_error") or submit_obs.get("stderr") or None
-                log_step(
-                    step=steps_taken,
-                    action="{'tool':'submit'}",
-                    reward=reward,
-                    done=submit_done,
-                    error=submit_error,
-                )
+                steps_taken   += 1
+                submit_info    = submit_payload.get("info") or {}
+                submit_obs     = submit_payload.get("observation") or {}
+                submit_done    = bool(submit_payload.get("done", False))
+                done           = submit_done
+                submit_error   = submit_info.get("last_action_error") or submit_obs.get("stderr") or None
+                log_step(step=steps_taken, action="submit", reward=reward, done=submit_done, error=submit_error)
 
-            score = await _get_score(eval_base_url, task_id, rewards)
-            success = score >= SUCCESS_SCORE_THRESHOLD
+            raw_score = float((final_payload.get("info") or {}).get("score") or 0.0)
+            score     = _normalize_task_score(raw_score)
+            success   = raw_score >= SUCCESS_SCORE_THRESHOLD
+
     except Exception as exc:
-        print(f"[ERROR] Inference failed: {exc}", flush=True)
+        print(f"[ERROR] Inference failed: {type(exc).__name__}: {exc!r}", flush=True)
 
     log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
     return {
         "success": success,
-        "steps": steps_taken,
-        "score": score,
+        "steps":   steps_taken,
+        "score":   score,
         "rewards": rewards,
-        "task": task_id,
+        "task":    task_id,
     }
 
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run LLM inference on rl_env tasks")

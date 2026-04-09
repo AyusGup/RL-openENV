@@ -18,8 +18,10 @@ class SREStepRewarder:
         self.seen_source: Set[str] = set()
         self.seen_test_runs: Set[str] = set()
         self.rewarded_edits: Set[str] = set()
-        self.seen_replays: Set[str] = set()
         self.last_cat_stdout_by_target: dict[str, str] = {}
+        self.has_relevant_code_edit: bool = False
+        self.edit_since_last_replay: bool = False
+        self.last_replay_name: str | None = None
 
     def calculate_reward(
         self,
@@ -77,19 +79,29 @@ class SREStepRewarder:
                 else:
                     reward += 0.03
                 self.rewarded_edits.add(normalized_path)
+            if (
+                normalized_path in expected_files
+                and normalized_path != "RCA.md"
+                and action.file_content.strip()
+            ):
+                self.has_relevant_code_edit = True
+                self.edit_since_last_replay = True
             # Allow one immediate validation read after edits.
             self.last_cat_stdout_by_target.pop(normalized_path, None)
 
         elif action.tool == "replay":
             replay_name = " ".join(action.command.lower().split())
-            if replay_name:
-                if replay_name in self.seen_replays:
+            if self.has_relevant_code_edit and replay_name:
+                # Reward verification usage after real code progress.
+                if replay_name != self.last_replay_name:
+                    reward += 0.01
+                # Penalize only unchanged, consecutive duplicate replays.
+                if replay_name == self.last_replay_name and not self.edit_since_last_replay:
                     reward -= 0.01
-                else:
-                    reward += 0.02
-                    self.seen_replays.add(replay_name)
-            if "contract_ok=true" in observation.stdout.lower():
-                reward += 0.01
+            if self.has_relevant_code_edit and "contract_ok=true" in observation.stdout.lower():
+                reward += 0.02
+            self.last_replay_name = replay_name or None
+            self.edit_since_last_replay = False
 
         elif action.tool == "submit":
             return 0.0

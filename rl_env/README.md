@@ -17,6 +17,7 @@ An OpenEnv-style environment for evaluating agents on realistic SRE incident-res
 - **Action Space**: Simple `terminal`, `editor`, `replay`, and `submit` tools.
 - **Provider Pattern**: Swappable data sources for logs, metrics, and execution.
 - **Deterministic Grading**: Using `difflib`, `pytest` exit codes, and regex-based RCA scoring.
+- **Structured Inference Loop**: Built-in guards to reduce replay/cat spam and auto-submit once criteria are met.
 
 ## Motivation
 This environment models a real operational workflow humans perform during incident response: inspect alerts, read logs, inspect source, apply a fix, run verification, and submit a resolution. The tasks progress from a simple API contract bug to retry logic drift and finally a multi-service timeout incident with an RCA requirement.
@@ -51,6 +52,17 @@ State model:
 - `done`
 - `workspace_root`
 
+Runtime behavior notes:
+- `done=true` is returned when the agent submits or when server step budget is exhausted (auto-grade path).
+- For RCA-required tasks, inference policy prefers: code edit -> RCA -> replay -> submit.
+- Inference caps replay spam to at most 2 consecutive replay actions without an intervening code edit.
+- Inference will force a final submit if the loop exits without `done=true`.
+
+Scoring notes:
+- Final task score is computed by the server grader on submit/auto-grade.
+- Grader test subprocess timeout is `120s` (to reduce false failures on slower filesystems).
+- Inference normalizes emitted task scores into strict `(0, 1)` for evaluator compatibility.
+
 ## Repository Layout
 - `openenv.yaml`: OpenEnv manifest used by `openenv validate` and `openenv push`.
 - `fixtures/`: task fixtures, hidden tests, and replay assets.
@@ -67,7 +79,7 @@ async with SREEnv("http://127.0.0.1:8000") as env:
 ```
 
 ## Linux Setup
-From this directory (`sre_env`), create a virtual environment and install dependencies:
+From this directory (`rl_env`), create a virtual environment and install dependencies:
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
@@ -86,6 +98,13 @@ source .venv/bin/activate
 cd ..
 python -m uvicorn server.app:app --host 0.0.0.0 --port 8000
 ```
+
+## Inference Runtime Knobs
+Key environment variables used by `inference.py`:
+- `MAX_STEPS` (default `20`)
+- `SUCCESS_SCORE_THRESHOLD` (default `0.5`)
+- `HTTP_TIMEOUT_SECONDS` (default `180`)
+- `SCORE_EPSILON` (default `1e-6`)
 
 ## Hugging Face Secrets
 For Hugging Face Spaces, add these in your Space settings:
