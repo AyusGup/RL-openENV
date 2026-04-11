@@ -57,17 +57,17 @@ class SREStepRewarder:
         compile_component = 0.0
         replay_test_component = 0.0
         complexity_component = 0.0
-        legacy_raw = 0.0
+        heuristic_raw = 0.0
         compile_valid_now: Optional[bool] = None
         compile_prev_valid: Optional[bool] = None
         compile_error_type: Optional[str] = None
 
         if action.tool == "terminal":
-            legacy_raw += self._legacy_terminal_reward(action, observation)
+            heuristic_raw += self._terminal_heuristic_reward(action, observation)
 
         elif action.tool == "editor":
             normalized_path = action.file_path.replace("\\", "/")
-            legacy_raw += self._legacy_editor_reward(action, normalized_path, expected_files)
+            heuristic_raw += self._editor_heuristic_reward(action, normalized_path, expected_files)
 
             if (
                 normalized_path in expected_files
@@ -88,7 +88,7 @@ class SREStepRewarder:
                 complexity_component = self.w_complexity * complexity_signal
 
         elif action.tool == "replay":
-            legacy_raw += self._legacy_replay_reward(action, observation)
+            heuristic_raw += self._replay_heuristic_reward(action, observation)
             replay_ratio = self._extract_replay_ratio(observation.stdout)
             if replay_ratio is not None:
                 delta = max(0.0, replay_ratio - self.best_replay_ratio)
@@ -110,7 +110,7 @@ class SREStepRewarder:
             return 0.0
 
         heuristic_component = self._clamp(
-            self.heuristics_scale * legacy_raw,
+            self.heuristics_scale * heuristic_raw,
             -self.heuristics_cap,
             self.heuristics_cap,
         )
@@ -174,7 +174,7 @@ class SREStepRewarder:
             if complexity is not None:
                 self.baseline_complexity_by_file[normalized] = complexity
 
-    def _legacy_terminal_reward(self, action: SREAction, observation: SREObservation) -> float:
+    def _terminal_heuristic_reward(self, action: SREAction, observation: SREObservation) -> float:
         reward = 0.0
         cmd = action.command.lower()
         normalized_cmd = " ".join(cmd.split())
@@ -199,7 +199,7 @@ class SREStepRewarder:
                 self.seen_source.add(target)
         return reward
 
-    def _legacy_editor_reward(
+    def _editor_heuristic_reward(
         self,
         action: SREAction,
         normalized_path: str,
@@ -227,7 +227,7 @@ class SREStepRewarder:
         self.last_cat_stdout_by_target.pop(normalized_path, None)
         return reward
 
-    def _legacy_replay_reward(self, action: SREAction, observation: SREObservation) -> float:
+    def _replay_heuristic_reward(self, action: SREAction, observation: SREObservation) -> float:
         reward = 0.0
         replay_name = " ".join(action.command.lower().split())
         if self.has_relevant_code_edit and replay_name:
