@@ -33,6 +33,7 @@ class TaskConfig(BaseModel):
     severity: str = "MEDIUM"
     expected_fix_files: list[str] = Field(default_factory=list)
     grading_weights: dict[str, float] = Field(default_factory=dict)
+    reward_policy: dict[str, float] = Field(default_factory=dict)
     regex_checks: list[RegexCheck] = Field(default_factory=list)
 
     @classmethod
