@@ -587,6 +587,7 @@ def _candidate_edit_files(persistent: PersistentState, derived: DerivedState) ->
 
 def _choose_forced_action(
     derived: DerivedState,
+    persistent: PersistentState,
     task_id: str,
     replay_name: str,
 ) -> Optional[Dict[str, str]]:
@@ -987,6 +988,7 @@ async def run_inference(task: int) -> Dict[str, Any]:
                 # ── Priorities 2-4: forced actions ────────────────────────
                 action_dict = _choose_forced_action(
                     derived=derived,
+                    persistent=persistent,
                     task_id=task_id,
                     replay_name=replay_name,
                 )
@@ -1175,15 +1177,15 @@ async def run_inference(task: int) -> Dict[str, Any]:
                     error_text = detail
             except Exception:
                 pass
-        if current_step > 0:
-            log_step(
-                step=current_step,
-                action=current_action_log or "unknown",
-                reward=0.0,
-                done=False,
-                error=error_text,
-            )
-            steps_taken = max(steps_taken, current_step)
+        # Always surface the error — silent failures make debugging impossible
+        log_step(
+            step=max(current_step, 1),
+            action=current_action_log or "error",
+            reward=0.0,
+            done=False,
+            error=error_text,
+        )
+        steps_taken = max(steps_taken, current_step)
 
     log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
     return {
