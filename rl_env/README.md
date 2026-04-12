@@ -10,17 +10,35 @@ pinned: false
 
 # SRE Incident Response - OpenEnv
 
-An OpenEnv-style environment for evaluating agents on realistic SRE incident-response tasks: investigating alerts, reading logs, fixing broken services, validating the fix, and submitting for grading.
+A high-fidelity **SRE (Site Reliability Engineering)** evaluation environment built on the OpenEnv framework. It is designed to challenge AI agents with realistic production-grade incident response scenarios, requiring them to perform end-to-end remediation: from initial alert triage to root cause analysis (RCA).
 
-## Features
-- **Three-task benchmark**: Easy, medium, and hard incident scenarios with distinct failure modes.
-- **Action Space**: Simple `terminal`, `editor`, `replay`, and `submit` tools.
-- **Provider Pattern**: Swappable data sources for logs, metrics, and execution.
-- **Deterministic Grading**: Weighted `file_change`, continuous `tests_pass`, and `regex_match` scoring.
-- **Structured Inference Loop**: Built-in guards to reduce replay/cat spam and auto-submit once criteria are met.
+## 🚀 Environment Overview
+Unlike generic coding benchmarks, the SRE OpenEnv focuses on **observability-driven debugging**. Agents are not just given a bug description; they are given a production alert and a "broken" environment. To succeed, they must:
+- **Triage Alerts**: Interpret high-level monitoring signals (Prometheus/Alertmanager style).
+- **Navigate Microservices**: Explore complex service hierarchies and dependencies.
+- **Analyze Observability Data**: Parse application logs and service-to-service communication traces.
+- **Implement Fixes**: Patch code or configuration in a persistent workspace.
+- **Verify Remediation**: Use task-specific "replay" probes to confirm the fix works in vivo.
+- **Document the Fix**: Write an Incident RCA Report (`RCA.md`) that accurately describes the problem and the solution.
 
-## Motivation
-This environment models a real operational workflow humans perform during incident response: inspect alerts, read logs, inspect source, apply a fix, run verification, and submit a resolution. The tasks progress from a simple API contract bug to retry logic drift and finally a multi-service timeout incident with an RCA requirement.
+## ✨ Key Features
+- **Progressive Difficulty**: Three curated tasks ranging from single-file logic bugs to multi-service cascading failures.
+- **Persistent Workspace**: A realistic filesystem where actions have consequences and state is maintained.
+- **Rich Action Space**: Full access to a shell (`terminal`), a file manager (`editor`), and specialized validation tools (`replay`).
+- **Hardened Grading**: A deterministic scoring engine that evaluates code changes, test pass rates, and the accuracy of the RCA documentation.
+- **Observability Stack**: Simulated logs and monitoring metadata tailored to each incident.
+
+## 🎯 Motivation
+The SRE role is unique: it requires a blend of software engineering and systems operations. This environment evaluates whether an AI agent can bridge that gap. We measure an agent's ability to maintain a mental model of a system under pressure, avoid unproductive "cat/grep" loops, and provide high-quality documentation that matches its technical actions.
+
+## 🛠️ Incident Response Workflow
+The environment enforces a realistic lifecycle for every incident:
+1.  **Trigger**: An alert message is surfaced in the initial observation.
+2.  **Investigation**: The agent uses `terminal` to inspect logs (`logs/app.log`) and explore the `file_tree`.
+3.  **Remediation**: The agent applies a fix using the `editor`.
+4.  **Verification**: The agent runs the `replay` command to verify the system's health.
+5.  **Documentation**: For complex tasks, the agent must write an `RCA.md`.
+6.  **Resolution**: The agent calls `submit` to close the incident and receive a final grade.
 
 ## Interface
 Action space:
