@@ -74,6 +74,8 @@ Runtime behavior notes:
 - `done=true` is returned when the agent submits or when server step budget is exhausted (auto-grade path).
 - For RCA-required tasks, inference policy prefers: code edit -> RCA -> replay -> submit.
 - Inference caps replay spam to at most 2 consecutive replay actions without an intervening code edit.
+- Replay discipline: stop replaying after first `contract_ok=true` and proceed to RCA/submit.
+- If replay fails, apply another code change before replaying again.
 - Inference will force a final submit if the loop exits without `done=true`.
 - If LLM credits are exhausted mid-episode (provider `402`), inference degrades gracefully:
   - after at least one code edit: fallback to replay-first flow,
@@ -107,6 +109,7 @@ Reward policy details (step-level shaping):
 - `replay` shaping:
   - rewards progress only when replay evidence improves (e.g., first `contract_ok=true` transition).
   - repeated replay without intervening edits is penalized via the generic redundancy mechanism.
+  - guidance is completion-oriented, not reward-farming: one successful replay is enough before closeout.
 - `submit` step reward is `0.0`; final task score still comes from deterministic grading (`file_change`, `tests_pass`, `regex_match`).
 
 ## Repository Layout

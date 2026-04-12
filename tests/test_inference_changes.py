@@ -428,3 +428,53 @@ class TestSubmitGuardAfterFailedReplay:
         )
 
         assert guarded["tool"] == "submit"
+
+
+class TestSubmitGuardBeforeFirstCodeEdit:
+    def test_submit_forced_to_editor_before_first_code_edit(self) -> None:
+        p = PersistentState()
+        p.seen_cats.add("app/main.py")
+        derived = _make_derived(
+            has_code_edit=False,
+            has_rca=True,
+            has_replay_attempt=False,
+            has_replay_pass=False,
+            has_replay_after_latest_code_edit=True,
+            remaining_steps=6,
+            unread_candidate_files=["app/main.py", "logs/error.log"],
+        )
+        action = {"tool": "submit", "command": "", "file_path": "", "file_content": ""}
+
+        guarded = _apply_hard_guards(
+            action=action,
+            derived=derived,
+            persistent=p,
+            task_id="task1_wrong_status",
+            replay_name="create_item_contract",
+        )
+
+        assert guarded["tool"] == "editor"
+        assert guarded["file_path"].endswith(".py")
+
+    def test_submit_allowed_on_last_step_even_before_first_edit(self) -> None:
+        p = PersistentState()
+        derived = _make_derived(
+            has_code_edit=False,
+            has_rca=True,
+            has_replay_attempt=False,
+            has_replay_pass=False,
+            has_replay_after_latest_code_edit=True,
+            remaining_steps=1,
+            unread_candidate_files=["app/main.py"],
+        )
+        action = {"tool": "submit", "command": "", "file_path": "", "file_content": ""}
+
+        guarded = _apply_hard_guards(
+            action=action,
+            derived=derived,
+            persistent=p,
+            task_id="task1_wrong_status",
+            replay_name="create_item_contract",
+        )
+
+        assert guarded["tool"] == "submit"

@@ -94,9 +94,15 @@ Rules:
 - Treat RCA.md as a final incident document: investigate first, fix the code, verify with replay, then write RCA.
 - Create RCA.md before submit with headings: Root Cause, Affected Services, Fix Applied, Prevention.
 - In "Fix Applied", describe the exact code-level change using literal identifiers/expressions from edited source files.
+- Never choose submit before at least one meaningful code edit to a `.py` file.
+- Before submit, ensure replay has most recently confirmed success (`contract_ok=true`).
+- For RCA-required tasks, ensure RCA.md exists and reflects the latest code edit.
+- Replay discipline: after the first successful replay (`contract_ok=true`), stop replaying and move to RCA/submit.
+- Never replay repeatedly to farm reward; each extra replay without a new edit is harmful.
+- If replay fails after an edit, make another code/config change before replaying again.
 - After replay confirms success and RCA.md exists, submit immediately.
 - Keep RCA language concise, factual, and non-speculative.
-- Submit once the fix is verified or when more probing is unlikely to help.
+- If uncertain, prefer another fix/verify step instead of submit.
 """.strip()
 
 EDITOR_SYSTEM_PROMPT = """
@@ -442,43 +448,47 @@ def _apply_hard_guards(
     """
     tool = action["tool"]
 
-    # Guard 1: submit proposed but RCA missing → write RCA first
-    if (
-        tool == "submit"
-        and _task_requires_rca(task_id)
-        and not derived.has_rca
-    ):
-        return {"tool": "editor", "command": "", "file_path": "RCA.md", "file_content": ""}
+    # Guard 1: single deterministic submit gate.
+    # While budget remains, block submit until code is edited, replay passes,
+    # and (for RCA tasks) RCA.md is present and up-to-date.
+    if tool == "submit" and derived.remaining_steps > 1:
+        requires_rca = _task_requires_rca(task_id)
 
-    # Guard 1b: require replay after the latest code edit before submit (if budget allows).
-    if (
-        tool == "submit"
-        and derived.should_replay_after_latest_code_edit
-        and derived.remaining_steps > 1
-    ):
-        return {"tool": "replay", "command": replay_name, "file_path": "", "file_content": ""}
+        if not derived.has_code_edit:
+            candidate_files = _candidate_edit_files(persistent, derived)
+            if candidate_files:
+                return {
+                    "tool": "editor",
+                    "command": "",
+                    "file_path": candidate_files[0],
+                    "file_content": "",
+                }
+            unread_sources = [
+                path for path in derived.unread_candidate_files
+                if path.endswith(".py")
+            ]
+            if unread_sources:
+                return {
+                    "tool": "terminal",
+                    "command": f"cat {unread_sources[0]}",
+                    "file_path": "",
+                    "file_content": "",
+                }
+            return {"tool": "replay", "command": replay_name, "file_path": "", "file_content": ""}
 
-    # Guard 1bb: if code changed but replay still has not succeeded, do not
-    # submit early while we still have budget to validate/fix.
-    if (
-        tool == "submit"
-        and persistent.last_code_edit_step is not None
-        and not persistent.replay_passed
-        and derived.remaining_steps > 1
-    ):
-        return {"tool": "replay", "command": replay_name, "file_path": "", "file_content": ""}
+        if derived.should_replay_after_latest_code_edit or not persistent.replay_passed:
+            return {"tool": "replay", "command": replay_name, "file_path": "", "file_content": ""}
 
-    # Guard 1c: refresh RCA if code was edited after the most recent RCA write.
-    if (
-        tool == "submit"
-        and _task_requires_rca(task_id)
-        and persistent.last_code_edit_step is not None
-        and (
-            persistent.last_rca_edit_step is None
-            or persistent.last_rca_edit_step < persistent.last_code_edit_step
-        )
-    ):
-        return {"tool": "editor", "command": "", "file_path": "RCA.md", "file_content": ""}
+        if requires_rca:
+            rca_outdated = (
+                persistent.last_code_edit_step is not None
+                and (
+                    persistent.last_rca_edit_step is None
+                    or persistent.last_rca_edit_step < persistent.last_code_edit_step
+                )
+            )
+            if (not derived.has_rca) or rca_outdated:
+                return {"tool": "editor", "command": "", "file_path": "RCA.md", "file_content": ""}
 
     # Guard 2: editor on a file not yet read → cat it first
     if tool == "editor":
@@ -488,11 +498,25 @@ def _apply_hard_guards(
 
     # Guard 3: enforce correct replay command for this task
     if tool == "replay":
-        # Hard cap replay spam: at most 2 consecutive replays without an edit.
+        requires_rca = _task_requires_rca(task_id)
+
+        # Guard 3a: if replay already passed and RCA is required but missing,
+        # immediately redirect to RCA.md — never let extra replays happen here.
+        if (
+            persistent.replay_passed
+            and requires_rca
+            and not derived.has_rca
+        ):
+            return {"tool": "editor", "command": "", "file_path": "RCA.md", "file_content": ""}
+
+        # Guard 3b: hard cap replay spam — at most 2 consecutive replays without a .py edit.
         if (
             persistent.consecutive_replays_without_edit >= 2
             and derived.remaining_steps > 2
         ):
+            # If RCA is required and missing, write it before anything else.
+            if requires_rca and not derived.has_rca and derived.has_code_edit:
+                return {"tool": "editor", "command": "", "file_path": "RCA.md", "file_content": ""}
             candidate_files = _candidate_edit_files(persistent, derived)
             if candidate_files:
                 return {
@@ -513,7 +537,8 @@ def _apply_hard_guards(
                     "file_path": "",
                     "file_content": "",
                 }
-        # Avoid replay-only loops before any meaningful code change.
+
+        # Guard 3c: avoid replay-only loops before any meaningful code change.
         if (
             not derived.has_code_edit
             and derived.remaining_steps > 2
@@ -582,8 +607,19 @@ def _choose_forced_action(
     ):
         return {"tool": "replay", "command": replay_name, "file_path": "", "file_content": ""}
 
-    # Priority 4: RCA evidence sufficient, RCA missing
+    # Priority 4: RCA evidence sufficient, RCA missing — fire immediately after any replay completes
     if derived.needs_rca_now and requires_rca:
+        return {"tool": "editor", "command": "", "file_path": "RCA.md", "file_content": ""}
+
+    # Priority 4b: replay has passed, RCA is required but not written yet — catch any gap that
+    # Priority 4 misses (e.g., if needs_rca_now was gated on a broader evidence check).
+    if (
+        requires_rca
+        and persistent.replay_passed
+        and derived.has_code_edit
+        and not derived.has_rca
+        and not derived.should_replay_after_latest_code_edit
+    ):
         return {"tool": "editor", "command": "", "file_path": "RCA.md", "file_content": ""}
 
     # Priority 5: if replay has passed and RCA requirement is met, submit early.
@@ -662,7 +698,11 @@ def _build_action_prompt(
         f"Files already viewed: {seen_cats_block}\n"
         f"Unread candidate files:                 {unread_block}\n"
         f"Session technical changes (authoritative log):\n{diff_summary_block}\n"
-        f"Guidance: If replay already passed and RCA.md exists, choose submit now.\n"
+        f"--- Action Guidance (FOLLOW STRICTLY) ---\n"
+        f"1. If has_replay_pass=True and has_rca=False: choose editor with file_path=RCA.md NOW. Do NOT replay again.\n"
+        f"2. If has_replay_pass=True and has_rca=True: choose submit NOW.\n"
+        f"3. If has_code_edit=False: inspect files with terminal then use editor to fix a .py file.\n"
+        f"4. Replaying after a successful replay (contract_ok=true) wastes steps. Write RCA.md instead.\n"
     )
 
 
@@ -852,8 +892,8 @@ def _update_persistent_state(
         if fp == "RCA.md":
             persistent.rca_written = True
             persistent.last_rca_edit_step = step
-        if not (fp.endswith(".py") and content.strip()):
-            persistent.consecutive_replays_without_edit = 0
+        # Only reset consecutive_replays counter when an actual .py code edit happened
+        # (not for RCA.md or other markdown edits — those don't break replay loops)
 
     # Replay: update replay state precisely
     if tool == "replay":
@@ -867,8 +907,8 @@ def _update_persistent_state(
         elif "contract_ok=false" in stdout_lower:
             persistent.replay_passed = False
         # if neither keyword is present, leave replay_passed unchanged
-    elif tool != "editor":
-        persistent.consecutive_replays_without_edit = 0
+    # NOTE: only .py code edits (handled above at line 861) reset the replay spam counter;
+    # terminal/submit/RCA actions do NOT reset it, preventing the reset-and-loop cycle
 
     # Submit
     if tool == "submit":
@@ -1044,9 +1084,11 @@ async def run_inference(task: int) -> Dict[str, Any]:
                                         "file_content": "",
                                     }
                                 else:
+                                    # Avoid silent early submit on editor-generation failure.
+                                    fallback_cmd = f"cat {fp}" if fp and fp != "RCA.md" else "ls ."
                                     action_dict = {
-                                        "tool": "submit",
-                                        "command": "",
+                                        "tool": "terminal",
+                                        "command": fallback_cmd,
                                         "file_path": "",
                                         "file_content": "",
                                     }
