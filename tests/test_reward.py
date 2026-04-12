@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 from rl_env.models import SREAction, SREObservation
 from rl_env.server.reward import SREStepRewarder
 
@@ -117,3 +119,101 @@ def test_pytest_terminal_command_does_not_add_test_component() -> None:
     breakdown = rewarder.get_last_breakdown()
 
     assert breakdown["replay_test_component"] == 0.0
+
+
+def test_first_alerts_json_cat_offsets_base_penalty() -> None:
+    rewarder = SREStepRewarder()
+    rewarder.seed_initial_files(["logs/alerts.json"])
+
+    reward = rewarder.calculate_reward(
+        SREAction(tool="terminal", command="cat logs/alerts.json"),
+        SREObservation(stdout='{"severity":"CRITICAL"}\n', exit_code=0),
+        expected_fix_files=[],
+    )
+
+    assert math.isclose(reward, 0.0, abs_tol=1e-9)
+
+
+def test_first_metrics_json_cat_offsets_base_penalty() -> None:
+    rewarder = SREStepRewarder()
+    rewarder.seed_initial_files(["metrics/latency.json"])
+
+    reward = rewarder.calculate_reward(
+        SREAction(tool="terminal", command="cat metrics/latency.json"),
+        SREObservation(stdout='{"p95_ms":250}\n', exit_code=0),
+        expected_fix_files=[],
+    )
+
+    assert math.isclose(reward, 0.0, abs_tol=1e-9)
+
+
+def test_replay_spam_penalty_escalates_without_intervening_edit() -> None:
+    rewarder = SREStepRewarder()
+    rewarder.seed_initial_files(["app/main.py"])
+
+    # Seed "meaningful code edit happened" state so replay shaping applies.
+    rewarder.calculate_reward(
+        SREAction(
+            tool="editor",
+            file_path="app/main.py",
+            file_content="def f():\n    return 1\n",
+        ),
+        SREObservation(stdout="SUCCESS", exit_code=0),
+        expected_fix_files=["app/main.py"],
+    )
+
+    # First replay can earn the one-time replay delta component.
+    rewarder.calculate_reward(
+        SREAction(tool="replay", command="retry_health_contract"),
+        SREObservation(stdout="contract_ok=true\n", exit_code=0),
+        expected_fix_files=["app/main.py"],
+    )
+    first_breakdown = rewarder.get_last_breakdown()
+
+    # Repeated same replay, no edits in between: penalty should escalate.
+    rewarder.calculate_reward(
+        SREAction(tool="replay", command="retry_health_contract"),
+        SREObservation(stdout="contract_ok=true\n", exit_code=0),
+        expected_fix_files=["app/main.py"],
+    )
+    second_breakdown = rewarder.get_last_breakdown()
+
+    rewarder.calculate_reward(
+        SREAction(tool="replay", command="retry_health_contract"),
+        SREObservation(stdout="contract_ok=true\n", exit_code=0),
+        expected_fix_files=["app/main.py"],
+    )
+    third_breakdown = rewarder.get_last_breakdown()
+
+    # Heuristic component should become more negative on each repeated replay.
+    assert second_breakdown["heuristic_component"] < first_breakdown["heuristic_component"]
+    assert third_breakdown["heuristic_component"] < second_breakdown["heuristic_component"]
+
+
+def test_generic_redundancy_penalty_applies_to_repeated_terminal_actions() -> None:
+    rewarder = SREStepRewarder()
+    rewarder.seed_initial_files(["metrics/cpu.json"])
+
+    rewarder.calculate_reward(
+        SREAction(tool="terminal", command="cat metrics/cpu.json"),
+        SREObservation(stdout='{"cpu": 95}\n', exit_code=0),
+        expected_fix_files=[],
+    )
+    first = rewarder.get_last_breakdown()
+
+    rewarder.calculate_reward(
+        SREAction(tool="terminal", command="cat metrics/cpu.json"),
+        SREObservation(stdout='{"cpu": 95}\n', exit_code=0),
+        expected_fix_files=[],
+    )
+    second = rewarder.get_last_breakdown()
+
+    rewarder.calculate_reward(
+        SREAction(tool="terminal", command="cat metrics/cpu.json"),
+        SREObservation(stdout='{"cpu": 95}\n', exit_code=0),
+        expected_fix_files=[],
+    )
+    third = rewarder.get_last_breakdown()
+
+    assert second["heuristic_component"] < first["heuristic_component"]
+    assert third["heuristic_component"] < second["heuristic_component"]

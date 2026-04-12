@@ -85,7 +85,29 @@ Scoring notes:
 - `tests_pass` is continuous (`passed / total`) when pytest summaries are parseable.
 - Grader test subprocess timeout is `120s` (to reduce false failures on slower filesystems).
 - Server grading remains raw in `[0, 1]`; inference normalizes emitted task scores into strict `(0, 1)` for evaluator compatibility.
-- Step-level reward shaping is conservative (`base_step_penalty=-0.005`) and discourages no-op loops (duplicate cat/replay spam).
+- Step-level reward shaping is conservative (`base_step_penalty=-0.005`) and discourages redundant loops.
+
+Reward policy details (step-level shaping):
+- Base: every non-`submit` step starts with `-0.005`.
+- `terminal` (`cat`) first-read bonuses:
+  - `logs/*.log` (first read): positive heuristic bonus.
+  - relevant source files (`app/*.py`, `service_a/*.py`, `service_b/*.py`, first read): positive bonus.
+  - `logs/alerts.json` (first read): diagnostic bonus to offset base penalty.
+  - `metrics/*.json` (first read): diagnostic bonus to offset base penalty.
+- Generic redundancy penalty (all tools):
+  - repeated identical actions (same `terminal`/`editor`/`replay` fingerprint) get an escalating penalty.
+  - penalty increases with streak length (capped), so persistent no-op loops are discouraged.
+- `terminal` duplicate-read penalty:
+  - repeated `cat <same-target>` with identical stdout still carries an additional anti-loop penalty.
+- `editor` shaping:
+  - empty writes are penalized.
+  - no-op rewrites (same content as last seen) are penalized.
+  - first meaningful edit to an expected fix file gets a small positive bonus.
+  - edits to unexpected files are penalized.
+- `replay` shaping:
+  - rewards progress only when replay evidence improves (e.g., first `contract_ok=true` transition).
+  - repeated replay without intervening edits is penalized via the generic redundancy mechanism.
+- `submit` step reward is `0.0`; final task score still comes from deterministic grading (`file_change`, `tests_pass`, `regex_match`).
 
 ## Repository Layout
 - `openenv.yaml`: OpenEnv manifest used by `openenv validate` and `openenv push`.

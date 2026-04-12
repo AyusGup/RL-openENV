@@ -123,11 +123,7 @@ def test_task3_replay_checks_timeout_budget(tmp_path: Path) -> None:
         json={"tool": "replay", "command": "cascading_timeout_budget"},
     )
 
-    assert response.status_code in (200, 400)
-    if response.status_code == 400:
-        detail = response.json()["detail"]
-        assert "Error:" in detail
-        return
+    assert response.status_code == 200
     body = response.json()
     assert "replay=cascading_timeout_budget" in body["observation"]["stdout"]
     assert "contract_ok=false" in body["observation"]["stdout"]

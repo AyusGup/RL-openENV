@@ -24,7 +24,7 @@ def test_grader_scores_fixed_workspace_in_range(tmp_path: Path) -> None:
     target_file.write_text(re.sub(r"status_code\s*=\s*200", "status_code=201", original), encoding="utf-8")
 
     score = asyncio.run(SREGrader().grade_episode(task, fixtures_dir / task.id, workspace_root))
-    assert 0.0 <= score <= 1.0
+    assert 0.5 <= score <= 1.0
 
 
 def test_registry_discovers_single_task() -> None:
@@ -121,4 +121,34 @@ def test_grader_runs_hidden_fixture_tests_for_task2(tmp_path: Path) -> None:
         SREGrader()._check_tests(task.id, fixtures_dir / task.id, workspace_root)
     )
     assert test_score == 1.0
+
+
+def test_grader_regex_keeps_markdown_headings_for_rca_checks(tmp_path: Path) -> None:
+    fixtures_dir = Path(__file__).resolve().parents[1] / "rl_env" / "fixtures"
+    workspace_root = tmp_path / "workspace"
+    env = SREEnvironment(fixtures_dir, workspace_root)
+    registry = TaskRegistry(fixtures_dir)
+    task = registry.get_task("task2_retry_logic")
+
+    assert task is not None
+    env.reset(task.id)
+
+    retry_handler = workspace_root / "app" / "retry_handler.py"
+    retry_handler.write_text(
+        retry_handler.read_text(encoding="utf-8").replace(
+            "range(max_retries)", "range(max_retries + 1)"
+        ),
+        encoding="utf-8",
+    )
+    (workspace_root / "RCA.md").write_text(
+        (
+            "# Incident RCA Report\n\n"
+            "## Root Cause\nretry loop boundary mismatch\n\n"
+            "## Fix Applied\nupdated loop to `range(max_retries + 1)` in retry_handler.\n"
+        ),
+        encoding="utf-8",
+    )
+
+    regex_score = SREGrader()._check_regex(task.regex_checks, workspace_root)
+    assert regex_score == 1.0
 

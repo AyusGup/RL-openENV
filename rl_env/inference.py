@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import ast
+import difflib
 import json
 import math
 import os
@@ -127,12 +128,15 @@ class PersistentState:
     known_logs:    Dict[str, str] = field(default_factory=dict)
     edited_files:  Set[str]       = field(default_factory=set)
     seen_cats:     Set[str]       = field(default_factory=set)
+    # change tracking: file_path -> list of {before, after, step, diff}
+    edit_diffs:    Dict[str, List[Dict[str, str]]] = field(default_factory=dict)
     # replay state
     replay_attempted:    bool           = False
     replay_passed:       bool           = False
     last_replay_stdout:  Optional[str]  = None
     last_replay_step:    Optional[int]  = None
     last_code_edit_step: Optional[int]  = None
+    last_rca_edit_step:  Optional[int]  = None
     consecutive_replays_without_edit: int = 0
     # artifact state
     rca_written: bool = False
@@ -286,6 +290,24 @@ def _safe_json(value: Any) -> str:
         return str(value)
 
 
+def _generate_concise_diff_hint(before: str, after: str, context_lines: int = 3) -> str:
+    """Return a compact unified-diff string capped at ~30 lines."""
+    before_lines = before.splitlines(keepends=True)
+    after_lines  = after.splitlines(keepends=True)
+    diff_iter = difflib.unified_diff(
+        before_lines, after_lines,
+        fromfile="before", tofile="after",
+        n=context_lines,
+    )
+    diff_lines = list(diff_iter)
+    if not diff_lines:
+        return "(no diff - content unchanged)"
+    MAX_DIFF_LINES = 30
+    if len(diff_lines) > MAX_DIFF_LINES:
+        diff_lines = diff_lines[:MAX_DIFF_LINES] + ["... (diff truncated)\n"]
+    return "".join(diff_lines)
+
+
 def _normalize_task_score(raw_score: Any, epsilon: float = SCORE_EPSILON) -> float:
     try:
         score = float(raw_score)
@@ -384,6 +406,25 @@ def _task_requires_rca(task_id: str) -> bool:
     return task_id in {"task1_wrong_status", "task2_retry_logic", "task3_cascading_failure"}
 
 
+@lru_cache(maxsize=16)
+def _task_max_steps(task_id: str) -> int:
+    candidate_paths = [
+        Path(__file__).resolve().parent / "fixtures" / task_id / "task_config.json",
+        Path("fixtures") / task_id / "task_config.json",
+    ]
+    for config_path in candidate_paths:
+        if not config_path.exists():
+            continue
+        try:
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            max_steps = int(config.get("max_steps") or 0)
+            if max_steps > 0:
+                return max_steps
+        except Exception:
+            continue
+    return MAX_STEPS
+
+
 # ---------------------------------------------------------------------------
 # Action selection helpers
 # ---------------------------------------------------------------------------
@@ -416,6 +457,28 @@ def _apply_hard_guards(
         and derived.remaining_steps > 1
     ):
         return {"tool": "replay", "command": replay_name, "file_path": "", "file_content": ""}
+
+    # Guard 1bb: if code changed but replay still has not succeeded, do not
+    # submit early while we still have budget to validate/fix.
+    if (
+        tool == "submit"
+        and persistent.last_code_edit_step is not None
+        and not persistent.replay_passed
+        and derived.remaining_steps > 1
+    ):
+        return {"tool": "replay", "command": replay_name, "file_path": "", "file_content": ""}
+
+    # Guard 1c: refresh RCA if code was edited after the most recent RCA write.
+    if (
+        tool == "submit"
+        and _task_requires_rca(task_id)
+        and persistent.last_code_edit_step is not None
+        and (
+            persistent.last_rca_edit_step is None
+            or persistent.last_rca_edit_step < persistent.last_code_edit_step
+        )
+    ):
+        return {"tool": "editor", "command": "", "file_path": "RCA.md", "file_content": ""}
 
     # Guard 2: editor on a file not yet read → cat it first
     if tool == "editor":
@@ -508,27 +571,22 @@ def _choose_forced_action(
     """
     requires_rca = _task_requires_rca(task_id)
 
-    # Priority 2: after code edits, create RCA before replay when budget allows.
-    if requires_rca and derived.has_code_edit and not derived.has_rca and derived.remaining_steps > 2:
-        return {"tool": "editor", "command": "", "file_path": "RCA.md", "file_content": ""}
-
-    # Priority 3: force replay
+    # Priority 2: force replay
     if derived.should_force_replay:
         return {"tool": "replay", "command": replay_name, "file_path": "", "file_content": ""}
 
-    # Priority 4: replay after latest code edit before submit (if budget allows).
+    # Priority 3: replay after latest code edit before submit (if budget allows).
     if (
         derived.should_replay_after_latest_code_edit
         and derived.remaining_steps > 1
-        and (not requires_rca or derived.has_rca)
     ):
         return {"tool": "replay", "command": replay_name, "file_path": "", "file_content": ""}
 
-    # Priority 5: RCA evidence sufficient, RCA missing
+    # Priority 4: RCA evidence sufficient, RCA missing
     if derived.needs_rca_now and requires_rca:
         return {"tool": "editor", "command": "", "file_path": "RCA.md", "file_content": ""}
 
-    # Priority 6: if replay has passed and RCA requirement is met, submit early.
+    # Priority 5: if replay has passed and RCA requirement is met, submit early.
     if (
         derived.has_code_edit
         and derived.has_replay_pass
@@ -537,7 +595,7 @@ def _choose_forced_action(
     ):
         return {"tool": "submit", "command": "", "file_path": "", "file_content": ""}
 
-    # Priority 7: final step
+    # Priority 6: final step
     if derived.must_submit_now:
         return {"tool": "submit", "command": "", "file_path": "", "file_content": ""}
 
@@ -569,9 +627,21 @@ def _build_action_prompt(
             f"done={str(rec.done).lower()} error={rec.error or 'null'} "
             f"stdout={rec.stdout[:400]} stderr={rec.stderr[:300]}"
         )
-    hist_block     = "\n".join(history_lines) if history_lines else "None"
+    hist_block      = "\n".join(history_lines) if history_lines else "None"
     seen_cats_block = ", ".join(sorted(persistent.seen_cats)) if persistent.seen_cats else "None"
     unread_block    = ", ".join(derived.unread_candidate_files) if derived.unread_candidate_files else "None"
+    edited_block    = ", ".join(sorted(persistent.edited_files)) if persistent.edited_files else "None"
+
+    # Build a one-line-per-file diff summary so the LLM knows what it already changed
+    diff_summary_lines = []
+    for path, diffs in sorted(persistent.edit_diffs.items()):
+        latest = diffs[-1]
+        first_diff_line = next(
+            (l.rstrip() for l in latest["diff"].splitlines() if l.startswith(("@@", "+", "-"))),
+            "edited",
+        )
+        diff_summary_lines.append(f"  {path} (step {latest['step']}): {first_diff_line}")
+    diff_summary_block = "\n".join(diff_summary_lines) if diff_summary_lines else "  (No changes recorded in this session yet.)"
 
     return (
         f"Task: {task_id}\n"
@@ -588,8 +658,10 @@ def _build_action_prompt(
         f"has_replay_pass:   {derived.has_replay_pass}\n"
         f"replay_after_latest_code_edit: {derived.has_replay_after_latest_code_edit}\n"
         f"has_rca:           {derived.has_rca}\n"
-        f"Already-cat files (skip unless edited): {seen_cats_block}\n"
+        f"Edited files:                           {edited_block}\n"
+        f"Files already viewed: {seen_cats_block}\n"
         f"Unread candidate files:                 {unread_block}\n"
+        f"Session technical changes (authoritative log):\n{diff_summary_block}\n"
         f"Guidance: If replay already passed and RCA.md exists, choose submit now.\n"
     )
 
@@ -638,6 +710,8 @@ async def _build_editor_content(
     known_files: Dict[str, str],
     edited_files: Set[str],
     history: List[StepRecord],
+    replay_evidence: str,
+    edit_diffs: Optional[Dict[str, List[Dict[str, str]]]] = None,
 ) -> str:
     history_lines = [
         f"- step={r.step} action={r.action} reward={r.reward:.2f} error={r.error or 'null'}"
@@ -650,14 +724,44 @@ async def _build_editor_content(
         for log_name, log_content in known_logs.items()
     ]
     logs_block = "\n\n".join(log_sections) if log_sections else "None"
+
+    # For RCA, pass the current (post-fix) source snapshot of each edited .py file
     edited_source_sections = []
     if file_path == "RCA.md":
         for edited in sorted(edited_files):
             if edited.endswith(".py") and edited in known_files:
                 edited_source_sections.append(
-                    f"{edited}:\n{known_files[edited][:2000]}"
+                    f"{edited} (current/fixed version):\n{known_files[edited][:2000]}"
                 )
     edited_source_block = "\n\n".join(edited_source_sections) if edited_source_sections else "None"
+    replay_evidence_block = replay_evidence[:2000] if replay_evidence else "None"
+
+    # Build an authoritative change-history block from recorded diffs
+    change_history_block = "None"
+    if file_path == "RCA.md" and edit_diffs:
+        change_sections = []
+        for path, diffs in sorted(edit_diffs.items()):
+            if path.endswith(".py"):
+                for d in diffs:
+                    change_sections.append(
+                        f"File edited: {path} (at step {d['step']})\n"
+                        f"--- diff (before -> after) ---\n{d['diff']}\n"
+                        f"BEFORE snippet:\n{d['before_snippet']}\n"
+                        f"AFTER snippet:\n{d['after_snippet']}"
+                    )
+        if change_sections:
+            change_history_block = "\n\n".join(change_sections)
+
+    # Hardened RCA instruction - no misleading examples
+    rca_fix_instruction = ""
+    if file_path == "RCA.md":
+        rca_fix_instruction = (
+            "IMPORTANT for 'Fix Applied' section:\n"
+            "- Use the 'Change History' block above as the AUTHORITATIVE record of what changed.\n"
+            "- Describe the change in the AFTER direction (what the code now says), not the BEFORE.\n"
+            "- Quote the exact AFTER expression from the diff (lines starting with '+').\n"
+            "- Do NOT invert or guess the fix direction."
+        )
 
     response = client.chat.completions.create(
         model=MODEL_NAME,
@@ -670,7 +774,11 @@ async def _build_editor_content(
                     f"Target file: {file_path}\n\n"
                     f"Alert:\n{alert_message or 'None'}\n\n"
                     f"Known logs:\n{logs_block}\n\n"
-                    f"Edited source snapshots:\n{edited_source_block}\n\n"
+                    f"Change History (authoritative before->after diffs):\n"
+                    f"{change_history_block}\n\n"
+                    f"Edited source snapshots (current/fixed state):\n{edited_source_block}\n\n"
+                    f"Replay evidence:\n{replay_evidence_block}\n\n"
+                    f"{rca_fix_instruction}\n\n"
                     f"Recent history:\n{history_block}\n\n"
                     f"Current file contents:\n{current_source}"
                 ),
@@ -718,18 +826,32 @@ def _update_persistent_state(
                 else:
                     persistent.known_files[target] = stdout
 
-    # Editor: track written files
+    # Editor: track written files + record before/after diffs
     if tool == "editor":
         fp      = action["file_path"]
         content = action.get("file_content", "")
+        # Capture old content BEFORE updating known_files
+        old_content = persistent.known_files.get(fp, "")
         persistent.edited_files.add(fp)
         if content:
             persistent.known_files[fp] = content
+        # Record diff when content actually changed
+        if content and content != old_content:
+            diff_hint = _generate_concise_diff_hint(old_content, content)
+            if fp not in persistent.edit_diffs:
+                persistent.edit_diffs[fp] = []
+            persistent.edit_diffs[fp].append({
+                "before_snippet": old_content[:800],
+                "after_snippet":  content[:800],
+                "step":           str(step),
+                "diff": diff_hint,
+            })
         if fp.endswith(".py") and content.strip():
             persistent.last_code_edit_step = step
             persistent.consecutive_replays_without_edit = 0
         if fp == "RCA.md":
             persistent.rca_written = True
+            persistent.last_rca_edit_step = step
         if not (fp.endswith(".py") and content.strip()):
             persistent.consecutive_replays_without_edit = 0
 
@@ -752,6 +874,14 @@ def _update_persistent_state(
     if tool == "submit":
         persistent.submitted = True
 
+    # Build a stdout hint for history: for editor steps include a diff summary
+    history_stdout = stdout
+    if tool == "editor":
+        fp = action["file_path"]
+        diffs = persistent.edit_diffs.get(fp)
+        if diffs:
+            history_stdout = f"{stdout}\n[DIFF]\n{diffs[-1]['diff'][:400]}"
+
     # Append to history
     action_log = _sanitize_action_for_log(action)
     persistent.history.append(StepRecord(
@@ -760,7 +890,7 @@ def _update_persistent_state(
         reward=reward,
         done=done,
         error=last_error,
-        stdout=stdout[:600],
+        stdout=history_stdout[:600],
         stderr=stderr[:600],
     ))
 
@@ -771,6 +901,7 @@ def _update_persistent_state(
 
 async def run_inference(task: int) -> Dict[str, Any]:
     task_id     = TASK_MAP.get(task, f"task{task}")
+    effective_max_steps = max(MAX_STEPS, _task_max_steps(task_id))
     llm_client  = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
     replay_name = REPLAY_MAP.get(task_id, "create_item_contract")
 
@@ -781,6 +912,8 @@ async def run_inference(task: int) -> Dict[str, Any]:
     success      = False
     llm_disabled = False
     alert_message= ""
+    current_step = 0
+    current_action_log = ""
 
     log_start(task=task_id, env=BENCHMARK, model=MODEL_NAME)
 
@@ -797,7 +930,7 @@ async def run_inference(task: int) -> Dict[str, Any]:
             file_tree: List[str] = list(obs_dict.get("file_tree") or [])
             done = bool(result_payload.get("done", False))
 
-            for step in range(1, MAX_STEPS + 1):
+            for step in range(1, effective_max_steps + 1):
 
                 # ── Priority 1: done ──────────────────────────────────────
                 if done:
@@ -808,7 +941,7 @@ async def run_inference(task: int) -> Dict[str, Any]:
                     persistent=persistent,
                     file_tree=file_tree,
                     step=step,
-                    max_steps=MAX_STEPS,
+                    max_steps=effective_max_steps,
                 )
 
                 # ── Priorities 2-4: forced actions ────────────────────────
@@ -829,7 +962,7 @@ async def run_inference(task: int) -> Dict[str, Any]:
                                 persistent=persistent,
                                 derived=derived,
                                 step=step,
-                                max_steps=MAX_STEPS,
+                                max_steps=effective_max_steps,
                                 alert_message=alert_message,
                                 replay_name=replay_name,
                             )
@@ -896,6 +1029,8 @@ async def run_inference(task: int) -> Dict[str, Any]:
                                 known_files=persistent.known_files,
                                 edited_files=persistent.edited_files,
                                 history=persistent.history,
+                                replay_evidence=persistent.last_replay_stdout or "",
+                                edit_diffs=persistent.edit_diffs,
                             )
                         except Exception as exc:
                             err = str(exc).lower()
@@ -922,6 +1057,9 @@ async def run_inference(task: int) -> Dict[str, Any]:
                 _ = SREAction(**action_dict)
 
                 # ── Priority 8: POST /step ────────────────────────────────
+                action_log = _sanitize_action_for_log(action_dict)
+                current_step = step
+                current_action_log = action_log
                 step_resp = await http.post("/step", json=action_dict)
                 step_resp.raise_for_status()
                 result_payload = step_resp.json()
@@ -949,7 +1087,6 @@ async def run_inference(task: int) -> Dict[str, Any]:
                 rewards.append(reward)
                 steps_taken = step
 
-                action_log = _sanitize_action_for_log(action_dict)
                 log_step(step=step, action=action_log, reward=reward, done=done, error=error_display)
 
             # ── Priority 10: loop exits without done → force submit ────────
@@ -957,6 +1094,8 @@ async def run_inference(task: int) -> Dict[str, Any]:
                 submit_action = {
                     "tool": "submit", "command": "", "file_path": "", "file_content": "",
                 }
+                current_step = steps_taken + 1
+                current_action_log = "submit"
                 submit_resp = await http.post("/step", json=submit_action)
                 submit_resp.raise_for_status()
                 submit_payload = submit_resp.json()
@@ -969,7 +1108,7 @@ async def run_inference(task: int) -> Dict[str, Any]:
                 submit_done    = bool(submit_payload.get("done", False))
                 done           = submit_done
                 submit_error   = submit_info.get("last_action_error") or submit_obs.get("stderr") or None
-                log_step(step=steps_taken, action="submit", reward=reward, done=submit_done, error=submit_error)
+                log_step(step=steps_taken, action="submit(auto)", reward=reward, done=submit_done, error=submit_error)
 
             info_payload = final_payload.get("info") or {}
             raw_score = float(info_payload.get("score") or 0.0)
@@ -986,7 +1125,23 @@ async def run_inference(task: int) -> Dict[str, Any]:
                     log_grade_breakdown(numeric_breakdown)
 
     except Exception as exc:
-        print(f"[ERROR] Inference failed: {type(exc).__name__}: {exc!r}", flush=True)
+        error_text = str(exc)
+        if isinstance(exc, httpx.HTTPStatusError):
+            try:
+                detail = (exc.response.text or "").strip()
+                if detail:
+                    error_text = detail
+            except Exception:
+                pass
+        if current_step > 0:
+            log_step(
+                step=current_step,
+                action=current_action_log or "unknown",
+                reward=0.0,
+                done=False,
+                error=error_text,
+            )
+            steps_taken = max(steps_taken, current_step)
 
     log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
     return {

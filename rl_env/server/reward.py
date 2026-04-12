@@ -24,6 +24,7 @@ class SREStepRewarder:
     def __init__(self):
         self.initial_files: Set[str] = set()
         self.seen_logs: Set[str] = set()
+        self.seen_diagnostics: Set[str] = set()
         self.seen_source: Set[str] = set()
         self.rewarded_edits: Set[str] = set()
         self.last_cat_stdout_by_target: dict[str, str] = {}
@@ -31,6 +32,8 @@ class SREStepRewarder:
         self.edit_since_last_replay: bool = False
         self.replay_success_since_last_edit: bool = False
         self.last_replay_name: str | None = None
+        self.last_action_fingerprint: str | None = None
+        self.consecutive_redundant_actions: int = 0
         self.base_step_penalty: float = self.DEFAULT_BASE_STEP_PENALTY
         self.w_compile: float = self.DEFAULT_W_COMPILE
         self.w_test: float = self.DEFAULT_W_TEST
@@ -109,6 +112,7 @@ class SREStepRewarder:
             }
             return 0.0
 
+        heuristic_raw += self._generic_redundancy_penalty(action, observation)
         heuristic_component = self._clamp(
             self.heuristics_scale * heuristic_raw,
             -self.heuristics_cap,
@@ -189,11 +193,27 @@ class SREStepRewarder:
             target = cmd.split("cat ", maxsplit=1)[-1].strip().replace("\\", "/")
             previous_stdout = self.last_cat_stdout_by_target.get(target)
             if previous_stdout is not None and previous_stdout == observation.stdout:
-                reward -= 0.01
+                reward -= 0.03
             self.last_cat_stdout_by_target[target] = observation.stdout
             if target.startswith("logs/") and target.endswith(".log") and target not in self.seen_logs:
                 reward += 0.05
                 self.seen_logs.add(target)
+            elif (
+                target == "logs/alerts.json"
+                and target not in self.seen_diagnostics
+            ):
+                # Task alerts are high-signal diagnostics; first read should
+                # offset the base step penalty instead of going negative.
+                reward += 0.05
+                self.seen_diagnostics.add(target)
+            elif (
+                target.startswith("metrics/")
+                and target.endswith(".json")
+                and target not in self.seen_diagnostics
+            ):
+                # First metric snapshot is often essential for root-cause triage.
+                reward += 0.05
+                self.seen_diagnostics.add(target)
             elif self._is_relevant_source_file(target) and target not in self.seen_source:
                 reward += 0.05
                 self.seen_source.add(target)
@@ -208,6 +228,13 @@ class SREStepRewarder:
         reward = 0.0
         if not action.file_content.strip():
             reward -= 0.10
+        elif (
+            normalized_path in expected_files
+            and normalized_path in self.last_cat_stdout_by_target
+            and action.file_content.strip() == self.last_cat_stdout_by_target[normalized_path].strip()
+        ):
+            # No-op edit: content identical to the last-seen version of this file
+            reward -= 0.05
         elif normalized_path not in expected_files:
             reward -= 0.03
         elif normalized_path not in self.rewarded_edits:
@@ -233,8 +260,6 @@ class SREStepRewarder:
         if self.has_relevant_code_edit and replay_name:
             if self.edit_since_last_replay and replay_name != self.last_replay_name:
                 reward += 0.01
-            if replay_name == self.last_replay_name and not self.edit_since_last_replay:
-                reward -= 0.01
         if (
             self.has_relevant_code_edit
             and "contract_ok=true" in observation.stdout.lower()
@@ -299,6 +324,43 @@ class SREStepRewarder:
     def get_last_breakdown(self) -> dict[str, Any]:
         """Return the latest component-level step breakdown."""
         return dict(self.last_breakdown)
+
+    def _action_fingerprint(self, action: SREAction, observation: SREObservation) -> str:
+        """Build a compact fingerprint for generic redundancy detection."""
+        if action.tool == "terminal":
+            cmd = " ".join((action.command or "").lower().split())
+            out = (observation.stdout or "")[:240]
+            return f"terminal|{cmd}|exit={observation.exit_code}|out={out}"
+        if action.tool == "editor":
+            path = action.file_path.replace("\\", "/")
+            content = (action.file_content or "")[:240]
+            return f"editor|{path}|content={content}"
+        if action.tool == "replay":
+            replay_name = " ".join((action.command or "").lower().split())
+            text = (observation.stdout or "").lower()
+            if "contract_ok=true" in text:
+                status = "ok=true"
+            elif "contract_ok=false" in text:
+                status = "ok=false"
+            else:
+                status = "ok=unknown"
+            return f"replay|{replay_name}|{status}"
+        return action.tool
+
+    def _generic_redundancy_penalty(self, action: SREAction, observation: SREObservation) -> float:
+        """Escalating penalty for repeated identical actions across all tools."""
+        fingerprint = self._action_fingerprint(action, observation)
+        if fingerprint == self.last_action_fingerprint:
+            self.consecutive_redundant_actions += 1
+        else:
+            self.consecutive_redundant_actions = 0
+        self.last_action_fingerprint = fingerprint
+
+        if self.consecutive_redundant_actions <= 0:
+            return 0.0
+        # Raw penalty escalates with streak; scaled/clamped by global heuristic settings.
+        streak = min(self.consecutive_redundant_actions, 5)
+        return -0.05 * float(streak)
 
     def _clamp(self, value: float, lower: float, upper: float) -> float:
         return max(lower, min(upper, value))
