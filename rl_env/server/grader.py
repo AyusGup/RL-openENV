@@ -165,7 +165,12 @@ class SREGrader:
                 continue
                 
             with open(target_file, "r", encoding="utf-8") as f:
-                content = self._strip_comment_only_lines(f.read())
+                content = f.read()
+                # Strip comment-only lines only for source files where '#' is
+                # a code comment. Markdown RCA headings also start with '#'
+                # and must remain visible to regex checks.
+                if target_file.suffix == ".py":
+                    content = self._strip_comment_only_lines(content)
                 if re.search(check.pattern, content):
                     pass_count += 1
 

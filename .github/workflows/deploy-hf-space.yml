@@ -11,14 +11,9 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
-    environment: prod
+  test:
+    name: Run Tests
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    defaults:
-      run:
-        working-directory: rl_env
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -35,7 +30,36 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e .
+          pip install -e "./rl_env[dev]"
+
+      - name: Run Pytest
+        run: |
+          python -m pytest tests/ -v
+
+  deploy:
+    name: Deploy to Hugging Face
+    needs: test
+    environment: prod
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: |
+            rl_env/pyproject.toml
+            rl_env/uv.lock
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ./rl_env
 
       - name: Validate deployment settings
         env:
@@ -52,9 +76,11 @@ jobs:
           fi
 
       - name: Validate OpenEnv manifest
+        working-directory: rl_env
         run: openenv validate .
 
       - name: Deploy to Hugging Face
+        working-directory: rl_env
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_SPACE_REPO_ID: ${{ vars.HF_SPACE_REPO_ID }}

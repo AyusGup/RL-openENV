@@ -1,5 +1,6 @@
 """FastAPI server for the RL env (SRE-backed) environment."""
 
+import logging
 import os
 from pathlib import Path
 from typing import List, Optional
@@ -28,6 +29,7 @@ FIXTURES_DIR = Path(os.getenv("OPENENV_FIXTURES_DIR", RL_PACKAGE_ROOT / "fixture
 WORKSPACE_ROOT = Path(os.getenv("OPENENV_WORKSPACE_ROOT", RL_PACKAGE_ROOT / "workspace")).resolve()
 WORKSPACE_ROOT.mkdir(parents=True, exist_ok=True)
 PORT = int(os.getenv("PORT", 8000))
+LOGGER = logging.getLogger("rl_env.server")
 
 
 class ResetRequest(BaseModel):
@@ -97,6 +99,11 @@ def reset(request: ResetRequest = Body(default_factory=ResetRequest)):
     task_id = request.task_id or active_env.registry.default_task_id()
     observation = active_env.reset(task_id)
     if observation.stderr.startswith("Error:"):
+        LOGGER.error(
+            "reset_failed task_id=%s error=%s",
+            task_id,
+            observation.stderr,
+        )
         raise HTTPException(status_code=400, detail=observation.stderr)
     metadata = observation.metadata if isinstance(observation.metadata, dict) else {}
     return SREStepResult(
@@ -108,6 +115,7 @@ def reset(request: ResetRequest = Body(default_factory=ResetRequest)):
             message=metadata.get("message", f"Episode reset for task_id={task_id}"),
             last_action_error=metadata.get("last_action_error"),
             grading_breakdown=metadata.get("grading_breakdown"),
+            reward_breakdown=metadata.get("reward_breakdown"),
         ),
     )
 
@@ -118,6 +126,14 @@ def step(action: SREAction):
     observation = active_env.step(action)
     metadata = observation.metadata if isinstance(observation.metadata, dict) else {}
     if observation.stderr.startswith("Error:") and not bool(observation.done):
+        LOGGER.error(
+            "step_failed task_id=%s tool=%s command=%s file_path=%s error=%s",
+            getattr(active_env, "_task_id", ""),
+            action.tool,
+            action.command,
+            action.file_path,
+            observation.stderr,
+        )
         raise HTTPException(status_code=400, detail=observation.stderr)
     return SREStepResult(
         observation=observation,
@@ -128,6 +144,7 @@ def step(action: SREAction):
             message=metadata.get("message", ""),
             last_action_error=metadata.get("last_action_error"),
             grading_breakdown=metadata.get("grading_breakdown"),
+            reward_breakdown=metadata.get("reward_breakdown"),
         ),
     )
 

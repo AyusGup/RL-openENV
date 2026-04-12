@@ -5,7 +5,7 @@ The sre_env environment is an SRE incident response environment where an agent
 diagnoses and remediates infrastructure incidents.
 """
 
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from openenv.core.env_server.types import Action, Observation
 from pydantic import BaseModel, Field
@@ -58,6 +58,10 @@ class SREStepInfo(BaseModel):
     grading_breakdown: Optional[dict[str, float]] = Field(
         default=None,
         description="Per-component grading scores for completed episodes",
+    )
+    reward_breakdown: Optional[dict[str, Any]] = Field(
+        default=None,
+        description="Per-component reward breakdown for the latest step",
     )
 
 

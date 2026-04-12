@@ -10,17 +10,35 @@ pinned: false
 
 # SRE Incident Response - OpenEnv
 
-An OpenEnv-style environment for evaluating agents on realistic SRE incident-response tasks: investigating alerts, reading logs, fixing broken services, validating the fix, and submitting for grading.
+A high-fidelity **SRE (Site Reliability Engineering)** evaluation environment built on the OpenEnv framework. It is designed to challenge AI agents with realistic production-grade incident response scenarios, requiring them to perform end-to-end remediation: from initial alert triage to root cause analysis (RCA).
 
-## Features
-- **Three-task benchmark**: Easy, medium, and hard incident scenarios with distinct failure modes.
-- **Action Space**: Simple `terminal`, `editor`, `replay`, and `submit` tools.
-- **Provider Pattern**: Swappable data sources for logs, metrics, and execution.
-- **Deterministic Grading**: Weighted `file_change`, continuous `tests_pass`, and `regex_match` scoring.
-- **Structured Inference Loop**: Built-in guards to reduce replay/cat spam and auto-submit once criteria are met.
+## 🚀 Environment Overview
+Unlike generic coding benchmarks, the SRE OpenEnv focuses on **observability-driven debugging**. Agents are not just given a bug description; they are given a production alert and a "broken" environment. To succeed, they must:
+- **Triage Alerts**: Interpret high-level monitoring signals (Prometheus/Alertmanager style).
+- **Navigate Microservices**: Explore complex service hierarchies and dependencies.
+- **Analyze Observability Data**: Parse application logs and service-to-service communication traces.
+- **Implement Fixes**: Patch code or configuration in a persistent workspace.
+- **Verify Remediation**: Use task-specific "replay" probes to confirm the fix works in vivo.
+- **Document the Fix**: Write an Incident RCA Report (`RCA.md`) that accurately describes the problem and the solution.
 
-## Motivation
-This environment models a real operational workflow humans perform during incident response: inspect alerts, read logs, inspect source, apply a fix, run verification, and submit a resolution. The tasks progress from a simple API contract bug to retry logic drift and finally a multi-service timeout incident with an RCA requirement.
+## ✨ Key Features
+- **Progressive Difficulty**: Three curated tasks ranging from single-file logic bugs to multi-service cascading failures.
+- **Persistent Workspace**: A realistic filesystem where actions have consequences and state is maintained.
+- **Rich Action Space**: Full access to a shell (`terminal`), a file manager (`editor`), and specialized validation tools (`replay`).
+- **Hardened Grading**: A deterministic scoring engine that evaluates code changes, test pass rates, and the accuracy of the RCA documentation.
+- **Observability Stack**: Simulated logs and monitoring metadata tailored to each incident.
+
+## 🎯 Motivation
+The SRE role is unique: it requires a blend of software engineering and systems operations. This environment evaluates whether an AI agent can bridge that gap. We measure an agent's ability to maintain a mental model of a system under pressure, avoid unproductive "cat/grep" loops, and provide high-quality documentation that matches its technical actions.
+
+## 🛠️ Incident Response Workflow
+The environment enforces a realistic lifecycle for every incident:
+1.  **Trigger**: An alert message is surfaced in the initial observation.
+2.  **Investigation**: The agent uses `terminal` to inspect logs (`logs/app.log`) and explore the `file_tree`.
+3.  **Remediation**: The agent applies a fix using the `editor`.
+4.  **Verification**: The agent runs the `replay` command to verify the system's health.
+5.  **Documentation**: For complex tasks, the agent must write an `RCA.md`.
+6.  **Resolution**: The agent calls `submit` to close the incident and receive a final grade.
 
 ## Interface
 Action space:
@@ -56,6 +74,8 @@ Runtime behavior notes:
 - `done=true` is returned when the agent submits or when server step budget is exhausted (auto-grade path).
 - For RCA-required tasks, inference policy prefers: code edit -> RCA -> replay -> submit.
 - Inference caps replay spam to at most 2 consecutive replay actions without an intervening code edit.
+- Replay discipline: stop replaying after first `contract_ok=true` and proceed to RCA/submit.
+- If replay fails, apply another code change before replaying again.
 - Inference will force a final submit if the loop exits without `done=true`.
 - If LLM credits are exhausted mid-episode (provider `402`), inference degrades gracefully:
   - after at least one code edit: fallback to replay-first flow,
@@ -67,7 +87,30 @@ Scoring notes:
 - `tests_pass` is continuous (`passed / total`) when pytest summaries are parseable.
 - Grader test subprocess timeout is `120s` (to reduce false failures on slower filesystems).
 - Server grading remains raw in `[0, 1]`; inference normalizes emitted task scores into strict `(0, 1)` for evaluator compatibility.
-- Step-level reward shaping is conservative (`base_step_penalty=-0.005`) and discourages no-op loops (duplicate cat/replay spam).
+- Step-level reward shaping is conservative (`base_step_penalty=-0.005`) and discourages redundant loops.
+
+Reward policy details (step-level shaping):
+- Base: every non-`submit` step starts with `-0.005`.
+- `terminal` (`cat`) first-read bonuses:
+  - `logs/*.log` (first read): positive heuristic bonus.
+  - relevant source files (`app/*.py`, `service_a/*.py`, `service_b/*.py`, first read): positive bonus.
+  - `logs/alerts.json` (first read): diagnostic bonus to offset base penalty.
+  - `metrics/*.json` (first read): diagnostic bonus to offset base penalty.
+- Generic redundancy penalty (all tools):
+  - repeated identical actions (same `terminal`/`editor`/`replay` fingerprint) get an escalating penalty.
+  - penalty increases with streak length (capped), so persistent no-op loops are discouraged.
+- `terminal` duplicate-read penalty:
+  - repeated `cat <same-target>` with identical stdout still carries an additional anti-loop penalty.
+- `editor` shaping:
+  - empty writes are penalized.
+  - no-op rewrites (same content as last seen) are penalized.
+  - first meaningful edit to an expected fix file gets a small positive bonus.
+  - edits to unexpected files are penalized.
+- `replay` shaping:
+  - rewards progress only when replay evidence improves (e.g., first `contract_ok=true` transition).
+  - repeated replay without intervening edits is penalized via the generic redundancy mechanism.
+  - guidance is completion-oriented, not reward-farming: one successful replay is enough before closeout.
+- `submit` step reward is `0.0`; final task score still comes from deterministic grading (`file_change`, `tests_pass`, `regex_match`).
 
 ## Repository Layout
 - `openenv.yaml`: OpenEnv manifest used by `openenv validate` and `openenv push`.

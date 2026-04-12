@@ -3,7 +3,7 @@
 import asyncio
 import logging
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 from uuid import uuid4
 
 from openenv.core.env_server.interfaces import Environment
@@ -51,6 +51,7 @@ class SREEnvironment(Environment):
         self._max_steps = 50
         self._cumulative_reward = 0.0
         self._latest_grade_breakdown: Optional[dict[str, float]] = None
+        self._latest_reward_breakdown: Optional[dict[str, Any]] = None
         self.logger = logging.getLogger("rl_env")
 
     def reset(self, task_id: str | None = None) -> SREObservation:
@@ -78,11 +79,12 @@ class SREEnvironment(Environment):
         self._max_steps = task_config.max_steps
         self._cumulative_reward = 0.0
         self._latest_grade_breakdown = None
+        self._latest_reward_breakdown = None
         self.rewarder = SREStepRewarder()
 
         alert_data = asyncio.run(self.alert_provider.get_alert(resolved_task_id))
         file_tree = get_file_tree(self.workspace_root)
-        self.rewarder.seed_initial_files(file_tree)
+        self.rewarder.seed_initial_state(file_tree, self.workspace_root, task_config.expected_fix_files)
 
         return SREObservation(
             alert_message=alert_data.get("message", ""),
@@ -135,6 +137,7 @@ class SREEnvironment(Environment):
             action,
             observation,
             task_config.expected_fix_files,
+            task_config.reward_policy,
             final_score,
         )
         self._cumulative_reward += reward_value
@@ -146,6 +149,7 @@ class SREEnvironment(Environment):
             "message": info_message,
             "last_action_error": last_action_error,
             "grading_breakdown": self._latest_grade_breakdown if final_score is not None else None,
+            "reward_breakdown": self._latest_reward_breakdown,
         }
         return observation
 
@@ -250,13 +254,23 @@ class SREEnvironment(Environment):
         action: SREAction,
         observation: SREObservation,
         expected_fix_files: list[str],
+        reward_policy: dict[str, float],
         final_score: Optional[float],
     ) -> float:
         if final_score is not None:
+            self._latest_reward_breakdown = None
             return final_score
         if action.tool == "submit":
+            self._latest_reward_breakdown = None
             return 0.0
-        return self.rewarder.calculate_reward(action, observation, expected_fix_files)
+        reward_value = self.rewarder.calculate_reward(
+            action,
+            observation,
+            expected_fix_files,
+            reward_policy=reward_policy,
+        )
+        self._latest_reward_breakdown = self.rewarder.get_last_breakdown()
+        return reward_value
 
     def _error_observation(self, message: str) -> SREObservation:
         return SREObservation(

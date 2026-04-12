@@ -7,6 +7,7 @@ import importlib.util
 import json
 import sys
 import time
+import types
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -211,11 +212,23 @@ class ReplayExecutor:
         if spec is None or spec.loader is None:
             raise ValueError(f"Could not load replay module from {module_path}")
 
-        workspace_root = str(module_path.parents[1])
+        workspace_root = str(module_path.parent.parent.resolve())
+        package_name = module_path.parent.name
         original_sys_path = list(sys.path)
         previous_module = sys.modules.pop(module_name, None)
+        previous_package_modules = {
+            key: value
+            for key, value in list(sys.modules.items())
+            if key == package_name or key.startswith(f"{package_name}.")
+        }
+        for key in list(previous_package_modules.keys()):
+            sys.modules.pop(key, None)
         try:
             sys.path.insert(0, workspace_root)
+            namespace_pkg = types.ModuleType(package_name)
+            namespace_pkg.__path__ = [str(module_path.parent.resolve())]  # type: ignore[attr-defined]
+            namespace_pkg.__package__ = package_name
+            sys.modules[package_name] = namespace_pkg
             module = importlib.util.module_from_spec(spec)
             sys.modules[module_name] = module
             spec.loader.exec_module(module)
@@ -223,5 +236,9 @@ class ReplayExecutor:
         finally:
             sys.path[:] = original_sys_path
             sys.modules.pop(module_name, None)
+            for key in list(sys.modules.keys()):
+                if key == package_name or key.startswith(f"{package_name}."):
+                    sys.modules.pop(key, None)
+            sys.modules.update(previous_package_modules)
             if previous_module is not None:
                 sys.modules[module_name] = previous_module

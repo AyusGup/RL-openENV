@@ -1,44 +1,38 @@
-# rl-openenv
+# RL-OpenEnv: SRE Incident Response Benchmark
 
-Root workspace for the SRE OpenEnv project.
+A production-grade evaluation environment for AI agents specialized in **Site Reliability Engineering (SRE)**. This repository provides a suite of complex, multi-service incident scenarios designed to test an agent's ability to triage, debug, and remediate production issues.
 
-## Structure
-- `rl_env/`: main OpenEnv package, Docker setup, fixtures, and environment documentation.
-- `rl_env/inference.py`: inference runner client.
-- `validate-submission.sh`: pre-submission validator script.
-- `tests/`: local test suite.
+## 🌟 Project Overview
+This project leverages [OpenEnv](https://github.com/openenv) to create a high-fidelity sandbox for SRE tasks. It goes beyond simple code-fixing by introducing realistic operational constraints:
+- **Observability-First**: Alerts and logs are the primary drivers for investigation.
+- **Microservice Architecture**: Scenarios involve inter-service communication and cascading failures.
+- **RCA Documentation**: Success depends on both fixing the system and accurately documenting the root cause.
 
-## Start Here
-For package/environment setup and deployment details, see:
-- [`rl_env/README.md`](./rl_env/README.md)
+## 📁 Repository Structure
+- `rl_env/`: Core OpenEnv implementation, Docker configuration, and task fixtures.
+- `rl_env/inference.py`: The reference inference runner for agent evaluation.
+- `tests/`: End-to-end and unit tests for environment mechanics, including reward shaping and change tracking.
+- `validate-submission.sh`: Script to verify package integrity before submission.
 
-## Run Inference
-Start the environment server first, then from this repository root run:
-```bash
-source .venv/bin/activate
-export EVAL_BASE_URL="http://127.0.0.1:8000"
-export API_BASE_URL="https://router.huggingface.co/v1"
-export MODEL_NAME="Qwen/Qwen2.5-72B-Instruct"
-export HF_TOKEN="hf_your_token_here"
-python rl_env/inference.py --task 1
-```
+## 🚦 Getting Started
+For detailed setup, deployment, and task descriptions, please refer to the package documentation:
+👉 **[rl_env/README.md](./rl_env/README.md)**
 
-Task selector:
-- `--task 1`
-- `--task 2`
-- `--task 3`
-- omit `--task` to run all three tasks.
+### Running Inference Locally
+1. **Initialize the Environment**:
+   ```bash
+   source .venv/bin/activate
+   # Start the server (see rl_env/README for details)
+   ```
+2. **Execute Agent Policy**:
+   ```bash
+   export API_BASE_URL="https://router.huggingface.co/v1"
+   export MODEL_NAME="Qwen/Qwen2.5-72B-Instruct"
+   python rl_env/inference.py --task 2
+   ```
 
-Optional grading breakdown logs:
-```bash
-export ENABLE_GRADE_BREAKDOWN_LOGS=1
-python rl_env/inference.py --task 2
-```
+## 📊 Deployment
+This environment is designed to be hosted on **Hugging Face Spaces**. You can deploy it using the `openenv push` command or through the automated GitHub Actions workflow.
 
-You can load values from `.env.example` using your preferred dotenv workflow. Do not commit real secrets.
-
-## Validate Submission
-From this repository root:
-```bash
-./validate-submission.sh https://jha-ayush-rl-openenv.hf.space ./rl_env
-```
+---
+**License**: MIT

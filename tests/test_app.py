@@ -78,6 +78,8 @@ def test_step_and_state_round_trip(tmp_path: Path) -> None:
     body = step_response.json()
     assert "status_code=200" in body["observation"]["stdout"]
     assert body["reward"]["value"] >= 0.0
+    assert body["info"]["reward_breakdown"] is not None
+    assert "total_step_reward" in body["info"]["reward_breakdown"]
     assert body["done"] is False
     assert state_response.status_code == 200
     assert state_response.json()["task_id"] == "task1_wrong_status"
@@ -121,11 +123,7 @@ def test_task3_replay_checks_timeout_budget(tmp_path: Path) -> None:
         json={"tool": "replay", "command": "cascading_timeout_budget"},
     )
 
-    assert response.status_code in (200, 400)
-    if response.status_code == 400:
-        detail = response.json()["detail"]
-        assert "Error:" in detail
-        return
+    assert response.status_code == 200
     body = response.json()
     assert "replay=cascading_timeout_budget" in body["observation"]["stdout"]
     assert "contract_ok=false" in body["observation"]["stdout"]
@@ -161,6 +159,26 @@ def test_submit_returns_normalized_score(tmp_path: Path) -> None:
     assert response.status_code == 200
     assert 0.0 <= response.json()["info"]["score"] <= 1.0
     assert 0.0 <= response.json()["reward"]["value"] <= 1.0
+
+
+def test_bad_python_edit_does_not_crash_and_surfaces_compile_error_type(tmp_path: Path) -> None:
+    client = build_client(tmp_path)
+    client.post("/reset", json={"task_id": "task1_wrong_status"})
+
+    response = client.post(
+        "/step",
+        json={
+            "tool": "editor",
+            "file_path": "app/main.py",
+            "file_content": "def broken(:\n    pass\n",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    reward_breakdown = body["info"]["reward_breakdown"]
+    assert reward_breakdown is not None
+    assert reward_breakdown["compile_error_type"] == "SyntaxError"
 
 
 def test_step_limit_auto_grades_workspace(tmp_path: Path) -> None:
